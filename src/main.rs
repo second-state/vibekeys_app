@@ -1,14 +1,22 @@
+// #![cfg_attr(windows, windows_subsystem = "windows")]
+
 use axum::{extract::State, routing::get, routing::post, Json, Router};
 use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
 use btleplug::platform::Manager;
 use btleplug::platform::Peripheral as PlatformPeripheral;
 use clap::Parser;
-use log::{info, warn, error, debug};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
 use uuid::Uuid;
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
+};
 
 /// BLE Controller HTTP Server
 #[derive(Parser, Debug)]
@@ -52,11 +60,85 @@ struct SendMessageRequest {
     message: String,
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn setup_tray() -> anyhow::Result<TrayIcon> {
+    // let quit = MenuItem::new("Quit", true, None);
+    // let quit_id = quit.id().clone();
+    // let menu = Menu::with_items(&[&quit]).unwrap();
+    let menu = Menu::new();
+    // 16x16 RGBA icon - blue circle
+    let icon_data = {
+        let mut data = vec![0u8; 16 * 16 * 4];
+        let center = 7.5f32;
+        let radius = 6.5f32;
+        for y in 0..16 {
+            for x in 0..16 {
+                let dx = x as f32 - center;
+                let dy = y as f32 - center;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let idx = (y * 16 + x) as usize * 4;
+                if dist < radius {
+                    // Blue color with edge anti-aliasing
+                    let alpha = if dist > radius - 1.5 {
+                        ((radius - dist) / 1.5 * 255.0) as u8
+                    } else {
+                        255
+                    };
+                    data[idx] = 50; // R
+                    data[idx + 1] = 120; // G
+                    data[idx + 2] = 255; // B
+                    data[idx + 3] = alpha; // A
+                }
+            }
+        }
+        data
+    };
+    let icon = Icon::from_rgba(icon_data, 16, 16).unwrap();
+
+    let tray_icon = TrayIconBuilder::new()
+        .with_tooltip("Vibe Keys Server")
+        .with_icon(icon)
+        .with_menu(Box::new(menu))
+        .build()
+        .unwrap();
+
+    std::thread::spawn(move || {
+        let tray_event_channel = TrayIconEvent::receiver();
+        let menu_channel = MenuEvent::receiver();
+
+        loop {
+            if let Ok(event) = tray_event_channel.recv() {
+                println!("tray event: {:?}", event);
+            }
+
+            if let Ok(event) = menu_channel.recv() {
+                println!("menu event: {:?}", event);
+                // if event.id == quit_id {
+                //     info!("Quit requested from tray menu");
+                //     std::process::exit(0);
+                // }
+            }
+
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
+
+    Ok(tray_icon)
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn setup_tray() -> anyhow::Result<()> {
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
     env_logger::init();
+
+    // Setup system tray (Windows/macOS only)
+    let _tray = setup_tray()?;
 
     let state = AppState {
         peripheral: Arc::new(tokio::sync::Mutex::new(None)),
@@ -192,7 +274,7 @@ async fn ble_monitor_task(state: AppState) -> anyhow::Result<()> {
         if let Some(ref p) = *peripheral {
             match p.is_connected().await {
                 Ok(true) => {
-                    // Still connected, do nothing
+                    debug!("Device connected");
                 }
                 _ => {
                     warn!("Device disconnected!");
