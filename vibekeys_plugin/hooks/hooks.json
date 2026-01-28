@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify_vibekeys.sh stop"
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/notify_vibekeys.sh stopped"
           }
         ]
       }

@@ -46,7 +46,7 @@ struct AppState {
 #[serde(rename_all = "lowercase")]
 enum Status {
     Working,
-    Stop,
+    Stopped,
     Pending,
 }
 
@@ -250,7 +250,7 @@ async fn status_handler(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let message = match req.status {
         Status::Working => "[working]",
-        Status::Stop => "[stop]",
+        Status::Stopped => "[stopped]",
         Status::Pending => "[pending]",
     };
     send_to_peripheral(&state, message).await
