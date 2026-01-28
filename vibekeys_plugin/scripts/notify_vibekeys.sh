@@ -5,7 +5,7 @@ VIBEKEYS_APP_URL="${VIBEKEYS_APP_URL:-http://127.0.0.1:57001}"
 ACTION="$1"
 
 case "$ACTION" in
-    working|stop|waiting)
+    working|stop|pending)
         # Status update - send in background and exit 0
         curl -s -X POST "$VIBEKEYS_APP_URL/status" \
           -H 'Content-Type: application/json' \
