@@ -231,6 +231,7 @@ async fn send_to_peripheral(
     let peripheral = state.peripheral.lock().await;
     if let Some(ref p) = *peripheral {
         if let Err(e) = send_message(p, KEYBOARD_DISPLAY_ID, message).await {
+            p.disconnect().await.ok();
             return Err((axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
         }
         Ok(Json(
@@ -361,7 +362,7 @@ async fn connect_and_discover(peripheral: &PlatformPeripheral) -> anyhow::Result
     info!("Found {} characteristics", characteristics.len());
 
     // Send "Connected" message after successful connection
-    let _ = send_message(peripheral, KEYBOARD_DISPLAY_ID, "Connected").await;
+    send_message(peripheral, KEYBOARD_DISPLAY_ID, "Connected").await?;
 
     Ok(())
 }
@@ -388,6 +389,5 @@ async fn send_message(
         }
     }
 
-    warn!("Characteristic not found: {}", char_uuid);
-    Ok(())
+    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
 }
