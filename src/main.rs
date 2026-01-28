@@ -47,7 +47,7 @@ struct AppState {
 enum Status {
     Working,
     Stop,
-    Waiting,
+    Pending,
 }
 
 #[derive(Deserialize)]
@@ -249,9 +249,9 @@ async fn status_handler(
     Json(req): Json<StatusRequest>,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let message = match req.status {
-        Status::Working => "working",
-        Status::Stop => "stop",
-        Status::Waiting => "waiting",
+        Status::Working => "[working]",
+        Status::Stop => "[stop]",
+        Status::Pending => "[pending]",
     };
     send_to_peripheral(&state, message).await
 }
