@@ -174,7 +174,7 @@ async fn status_handler(
     send_to_peripheral(&state, message).await
 }
 
-// BLE monitor task: check connection and reconnect
+// BLE monitor task: watch for disconnect and reconnect
 async fn ble_monitor_task(state: AppState) -> anyhow::Result<()> {
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
@@ -183,17 +183,19 @@ async fn ble_monitor_task(state: AppState) -> anyhow::Result<()> {
         .next()
         .expect("No Bluetooth adapter found");
 
+    let mut interval = tokio::time::interval(Duration::from_secs(2));
+
     loop {
-        time::sleep(Duration::from_secs(30)).await;
+        interval.tick().await;
 
         let peripheral = state.peripheral.lock().await;
         if let Some(ref p) = *peripheral {
             match p.is_connected().await {
                 Ok(true) => {
-                    info!("Heartbeat: device still connected");
+                    // Still connected, do nothing
                 }
                 _ => {
-                    warn!("Device disconnected, attempting to reconnect...");
+                    warn!("Device disconnected!");
                     drop(peripheral);
                     *state.peripheral.lock().await = None;
 
