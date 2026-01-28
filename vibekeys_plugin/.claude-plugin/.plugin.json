@@ -1,0 +1,8 @@
+{
+    "name": "vibekeys",
+    "description": "VibeKeys BLE controller - sends messages/status to BLE keyboard via HTTP API",
+    "version": "0.1.0",
+    "author": {
+        "name": "csh"
+    }
+}

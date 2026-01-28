@@ -27,7 +27,7 @@ struct Args {
     host: String,
 
     /// HTTP server port
-    #[arg(short, long, default_value_t = 3000)]
+    #[arg(short, long, default_value_t = 57001)]
     port: u16,
 }
 
