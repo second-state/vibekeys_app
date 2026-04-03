@@ -4,6 +4,7 @@ use btleplug::platform::Manager;
 use btleplug::platform::Peripheral as PlatformPeripheral;
 use clap::{Parser, Subcommand};
 use log::{debug, info, warn};
+use std::io::{self, Read};
 use std::time::{Duration, Instant};
 use tokio::time;
 use uuid::Uuid;
@@ -37,6 +38,8 @@ enum Command {
         /// Key binding (e.g., "A", "Ctrl+C", Alt+Tab", "\"text\"")
         binding: String,
     },
+    /// Read Claude Code hook JSON from stdin and forward to device
+    Hook,
 }
 
 #[derive(clap::ValueEnum, Debug, Clone)]
@@ -78,6 +81,9 @@ async fn main() -> anyhow::Result<()> {
         Command::Keymap { key, binding } => {
             send_keymap(&key, &binding).await?;
             Ok(())
+        }
+        Command::Hook => {
+            handle_hook().await
         }
     }
 }
@@ -139,6 +145,54 @@ async fn send_to_device(char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
         manager
     };
     Ok(())
+}
+
+// Handle Claude Code hook input from stdin
+async fn handle_hook() -> anyhow::Result<()> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input)?;
+
+    let hook: serde_json::Value = serde_json::from_str(&input)?;
+    let event = hook["hook_event_name"].as_str().unwrap_or("");
+
+    let message = match event {
+        "UserPromptSubmit" => {
+            let prompt = hook["prompt"].as_str().unwrap_or("");
+            format!("[user] {}", truncate(prompt, 80))
+        }
+        "Stop" => "[stopped]".to_string(),
+        "Notification" => {
+            let msg = hook["message"].as_str().unwrap_or("");
+            format!("[notify] {}", truncate(msg, 80))
+        }
+        "PreToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[tool] {}", tool)
+        }
+        "PostToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[done] {}", tool)
+        }
+        "SessionStart" => "[working]".to_string(),
+        "StopFailure" => {
+            let error = hook["error"].as_str().unwrap_or("unknown");
+            format!("[error] {}", error)
+        }
+        _ => {
+            info!("Unhandled hook event: {}", event);
+            return Ok(());
+        }
+    };
+
+    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await
+}
+
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len])
+    }
 }
 
 // Send keymap configuration
