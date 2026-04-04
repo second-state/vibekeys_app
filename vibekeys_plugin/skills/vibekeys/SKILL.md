@@ -79,17 +79,22 @@ Each call configures one key. The device merges it into the existing keymap.
 ### Combo (keyboard shortcut)
 
 ```bash
-# Single key
+# Single key (letter, digit, or special key name)
 vibekeys keymap ESC A
 vibekeys keymap GUI 1
+vibekeys keymap CUSTOM Enter
+vibekeys keymap MIC Space
 
 # With modifiers
 vibekeys keymap ESC Ctrl+C
 vibekeys keymap CUSTOM Alt+Tab
 vibekeys keymap GUI Ctrl+Shift+P
+vibekeys keymap ROTATE Option+Cmd+Space
 ```
 
-Supported modifiers: `Ctrl`, `Alt`, `Shift`, `Meta`, `Win`, `Cmd` (`Win` and `Cmd` auto-convert to `Meta`)
+Special key names: `Enter`, `Return`, `Space`, `Tab`, `Escape`, `Esc`, `Backspace`, `Delete`, `Insert`, `Home`, `End`, `PageUp`, `PageDown`, `Up`, `Down`, `Left`, `Right`, `F1`-`F12`, `Plus`, `Minus`, `Equal`, `Semicolon`, `Quote`, `Backquote`, `Backslash`, `Comma`, `Period`, `Slash`, `BracketLeft`, `BracketRight`, `Ctrl`, `Shift`, `Alt`, `Option`, `GUI`, `Win`, `Meta`, `Cmd`, `Command`
+
+Supported modifiers: `Ctrl`, `Alt`, `Option`, `Shift`, `Meta`, `Win`, `Cmd` (`Win`/`Cmd` → `Meta`, `Option` → `Alt`)
 
 ### Text macro
 
@@ -103,9 +108,12 @@ vibekeys keymap CUSTOM '"hello world"'
 ### Binding resolution
 
 1. Quoted string (`"..."` or `'...'`) → text macro
-2. `+` separated with valid modifiers → combo
-3. Single uppercase letter or digit → combo (no modifiers)
-4. Anything else → text macro
+2. Known key name (case-insensitive) → combo
+3. Single letter or digit → combo
+4. `+` separated with valid modifiers → combo (e.g., `Ctrl+c`, `Alt+Tab`)
+5. Anything else → text macro
+
+Note: Modifiers and key names are case-insensitive. `Ctrl+c`, `ctrl+C`, and `CTRL+C` all work.
 
 ## Examples
 
@@ -123,4 +131,13 @@ vibekeys send "working"
 
 # User: "Map GUI to open command palette"
 vibekeys keymap GUI Ctrl+Shift+P
+
+# User: "Map ROTATE to Cmd+Space (Mac Spotlight)"
+vibekeys keymap ROTATE Cmd+Space
+
+# User: "Map CUSTOM to Option+Tab"
+vibekeys keymap CUSTOM Option+Tab
+
+# User: "Map ACCEPT to F5"
+vibekeys keymap ACCEPT F5
 ```

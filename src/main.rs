@@ -216,45 +216,89 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Combo with + separator
-    if trimmed.contains('+') {
-        let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
-        let valid_modifiers = ["ctrl", "alt", "shift", "meta", "win", "cmd"];
+    // Valid special key names (matching controller_zh.html)
+    let valid_keys = [
+        // Basic navigation
+        "enter", "return", "space", "tab", "escape", "esc", "backspace", "delete", "insert",
+        "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+        // Modifiers (can also be used as standalone keys)
+        "ctrl", "shift", "alt", "option",
+        // System keys
+        "gui", "win", "meta", "cmd", "command",
+        // F-keys
+        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        // Symbols
+        "plus", "minus", "equal", "semicolon", "quote", "backquote", "backslash",
+        "comma", "period", "slash", "bracketleft", "bracketright",
+    ];
 
-        let all_mods_valid = parts[..parts.len() - 1]
-            .iter()
-            .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
+    let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
 
-        if all_mods_valid {
-            let modifiers: Vec<String> = parts[..parts.len() - 1]
-                .iter()
-                .map(|p| match p.to_lowercase().as_str() {
-                    "win" | "cmd" => "meta".to_string(),
-                    other => other.to_string(),
-                })
-                .collect();
-            return serde_json::json!({
-                "type": "combo",
-                "modifiers": modifiers,
-                "key": parts.last().unwrap().to_uppercase(),
-                "raw": input,
-            });
-        }
-    }
-
-    // Single uppercase letter or digit
-    if trimmed.len() == 1
-        && trimmed
-            .chars()
-            .next()
-            .map_or(false, |c| c.is_ascii_uppercase() || c.is_ascii_digit())
-    {
+    // Check if input is a single uppercase letter (as combo)
+    if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
         return serde_json::json!({
             "type": "combo",
             "modifiers": [],
             "key": trimmed,
             "raw": input,
         });
+    }
+
+    // Check if input is a single digit (as combo)
+    if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        return serde_json::json!({
+            "type": "combo",
+            "modifiers": [],
+            "key": trimmed,
+            "raw": input,
+        });
+    }
+
+    // Check if input is a known key name
+    let key_lower = trimmed.to_lowercase();
+    if valid_keys.contains(&key_lower.as_str()) {
+        return serde_json::json!({
+            "type": "combo",
+            "modifiers": [],
+            "key": trimmed.to_uppercase(),
+            "raw": input,
+        });
+    }
+
+    // Combo with + separator
+    if trimmed.contains('+') {
+        let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
+
+        // Check if all parts except last are valid modifiers
+        let all_mods_valid = parts[..parts.len() - 1]
+            .iter()
+            .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
+
+        if all_mods_valid {
+            let last_part = parts.last().unwrap();
+            let last_lower = last_part.to_lowercase();
+
+            // Check if last part is a valid key (known name OR alphanumeric)
+            let is_valid_key = valid_keys.contains(&last_lower.as_str())
+                || (last_part.len() == 1 && last_part.chars().next().map_or(false, |c| c.is_alphanumeric()));
+
+            if is_valid_key {
+                let modifiers: Vec<String> = parts[..parts.len() - 1]
+                    .iter()
+                    .map(|p| match p.to_lowercase().as_str() {
+                        "win" | "cmd" => "meta".to_string(),
+                        "option" => "alt".to_string(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                return serde_json::json!({
+                    "type": "combo",
+                    "modifiers": modifiers,
+                    "key": last_part.to_uppercase(),
+                    "raw": input,
+                });
+            }
+        }
     }
 
     // Default: text
