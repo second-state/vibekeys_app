@@ -25,12 +25,6 @@ enum Command {
         /// Message to send
         message: String,
     },
-    /// Send status to the connected device
-    Status {
-        /// Status to send
-        #[arg(value_enum)]
-        status: Status,
-    },
     /// Configure key mapping (merged, can be done one key at a time)
     Keymap {
         /// Key name (MIC, CUSTOM, ESC, GUI, BACKSPACE, SWITCH, ACCEPT, ROTATE)
@@ -40,13 +34,6 @@ enum Command {
     },
     /// Read Claude Code hook JSON from stdin and forward to device
     Hook,
-}
-
-#[derive(clap::ValueEnum, Debug, Clone)]
-enum Status {
-    Working,
-    Stopped,
-    Pending,
 }
 
 // Controller Service UUID
@@ -69,22 +56,11 @@ async fn main() -> anyhow::Result<()> {
             send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await?;
             Ok(())
         }
-        Command::Status { status } => {
-            let message = match status {
-                Status::Working => "[working]",
-                Status::Stopped => "[stopped]",
-                Status::Pending => "[pending]",
-            };
-            send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await?;
-            Ok(())
-        }
         Command::Keymap { key, binding } => {
             send_keymap(&key, &binding).await?;
             Ok(())
         }
-        Command::Hook => {
-            handle_hook().await
-        }
+        Command::Hook => handle_hook().await,
     }
 }
 
