@@ -68,7 +68,7 @@ Each call configures one key. The device merges it into the existing keymap.
 | `MIC` | Microphone key |
 | `CUSTOM` | Custom key |
 | `ESC` | Escape key |
-| `GUI` | GUI key |
+| `NEXT` | Next key |
 | `BACKSPACE` | Backspace key |
 | `SWITCH` | Switch key |
 | `ACCEPT` | Accept key |
@@ -81,14 +81,14 @@ Each call configures one key. The device merges it into the existing keymap.
 ```bash
 # Single key (letter, digit, or special key name)
 vibekeys keymap ESC A
-vibekeys keymap GUI 1
+vibekeys keymap NEXT 1
 vibekeys keymap CUSTOM Enter
 vibekeys keymap MIC Space
 
 # With modifiers
 vibekeys keymap ESC Ctrl+C
 vibekeys keymap CUSTOM Alt+Tab
-vibekeys keymap GUI Ctrl+Shift+P
+vibekeys keymap NEXT Ctrl+Shift+P
 vibekeys keymap ROTATE Option+Cmd+Space
 ```
 
@@ -129,8 +129,8 @@ vibekeys keymap MIC '"I am using Claude Code"'
 # User: "Show 'working' on the keyboard"
 vibekeys send "working"
 
-# User: "Map GUI to open command palette"
-vibekeys keymap GUI Ctrl+Shift+P
+# User: "Map NEXT to open command palette"
+vibekeys keymap NEXT Ctrl+Shift+P
 
 # User: "Map ROTATE to Cmd+Space (Mac Spotlight)"
 vibekeys keymap ROTATE Cmd+Space

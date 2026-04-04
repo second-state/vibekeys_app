@@ -186,7 +186,7 @@ async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
         "MIC",
         "CUSTOM",
         "ESC",
-        "GUI",
+        "NEXT",
         "BACKSPACE",
         "SWITCH",
         "ACCEPT",
