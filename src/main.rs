@@ -126,9 +126,12 @@ async fn send_to_device(char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
 // Handle Claude Code hook input from stdin
 async fn handle_hook() -> anyhow::Result<()> {
     let mut input = String::new();
-    io::stdin().read_to_string(&mut input)?;
+    io::stdin().read_to_string(&mut input).ok();
 
-    let hook: serde_json::Value = serde_json::from_str(&input)?;
+    let hook: serde_json::Value = match serde_json::from_str(&input) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
     let event = hook["hook_event_name"].as_str().unwrap_or("");
 
     let message = match event {
@@ -160,7 +163,8 @@ async fn handle_hook() -> anyhow::Result<()> {
         }
     };
 
-    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await
+    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await.ok();
+    Ok(())
 }
 
 fn truncate(s: &str, max_len: usize) -> String {
