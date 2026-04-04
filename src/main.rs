@@ -163,7 +163,9 @@ async fn handle_hook() -> anyhow::Result<()> {
         }
     };
 
-    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await.ok();
+    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes())
+        .await
+        .ok();
     Ok(())
 }
 
@@ -202,6 +204,43 @@ async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
     send_to_device(KEYMAP_CONFIG_ID, json_str.as_bytes()).await
 }
 
+// Unescape common escape sequences in quoted strings
+fn unescape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some('\'') => result.push('\''),
+                Some('0') => result.push('\0'),
+                Some('x') => {
+                    // Handle \xNN hex escape
+                    let hex1 = chars.next().unwrap_or('0');
+                    let hex2 = chars.next().unwrap_or('0');
+                    if let Some(byte) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16).ok() {
+                        result.push(byte as char);
+                    }
+                }
+                Some(other) => {
+                    // Unknown escape, keep as-is
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 fn parse_key_binding(input: &str) -> serde_json::Value {
     let trimmed = input.trim();
 
@@ -209,9 +248,12 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     if (trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
     {
+        let content = &trimmed[1..trimmed.len() - 1];
+        // Unescape common escape sequences
+        let unescaped = unescape_string(content);
         return serde_json::json!({
             "type": "text",
-            "value": &trimmed[1..trimmed.len() - 1],
+            "value": unescaped,
             "raw": input,
         });
     }
@@ -219,23 +261,71 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     // Valid special key names (matching controller_zh.html)
     let valid_keys = [
         // Basic navigation
-        "enter", "return", "space", "tab", "escape", "esc", "backspace", "delete", "insert",
-        "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+        "enter",
+        "return",
+        "space",
+        "tab",
+        "escape",
+        "esc",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "up",
+        "down",
+        "left",
+        "right",
         // Modifiers (can also be used as standalone keys)
-        "ctrl", "shift", "alt", "option",
+        "ctrl",
+        "shift",
+        "alt",
+        "option",
         // System keys
-        "gui", "win", "meta", "cmd", "command",
+        "gui",
+        "win",
+        "meta",
+        "cmd",
+        "command",
         // F-keys
-        "f1", "f2", "f3", "f4", "f5", "f6", "f7", "f8", "f9", "f10", "f11", "f12",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
         // Symbols
-        "plus", "minus", "equal", "semicolon", "quote", "backquote", "backslash",
-        "comma", "period", "slash", "bracketleft", "bracketright",
+        "plus",
+        "minus",
+        "equal",
+        "semicolon",
+        "quote",
+        "backquote",
+        "backslash",
+        "comma",
+        "period",
+        "slash",
+        "bracketleft",
+        "bracketright",
     ];
 
     let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
 
     // Check if input is a single uppercase letter (as combo)
-    if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+    if trimmed.len() == 1
+        && trimmed
+            .chars()
+            .next()
+            .map_or(false, |c| c.is_ascii_uppercase())
+    {
         return serde_json::json!({
             "type": "combo",
             "modifiers": [],
@@ -280,7 +370,11 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
 
             // Check if last part is a valid key (known name OR alphanumeric)
             let is_valid_key = valid_keys.contains(&last_lower.as_str())
-                || (last_part.len() == 1 && last_part.chars().next().map_or(false, |c| c.is_alphanumeric()));
+                || (last_part.len() == 1
+                    && last_part
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_alphanumeric()));
 
             if is_valid_key {
                 let modifiers: Vec<String> = parts[..parts.len() - 1]
