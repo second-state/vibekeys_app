@@ -163,7 +163,9 @@ async fn handle_hook() -> anyhow::Result<()> {
         }
     };
 
-    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await.ok();
+    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes())
+        .await
+        .ok();
     Ok(())
 }
 
@@ -184,7 +186,7 @@ async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
         "MIC",
         "CUSTOM",
         "ESC",
-        "GUI",
+        "NEXT",
         "BACKSPACE",
         "SWITCH",
         "ACCEPT",
@@ -202,6 +204,43 @@ async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
     send_to_device(KEYMAP_CONFIG_ID, json_str.as_bytes()).await
 }
 
+// Unescape common escape sequences in quoted strings
+fn unescape_string(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('n') => result.push('\n'),
+                Some('r') => result.push('\r'),
+                Some('t') => result.push('\t'),
+                Some('\\') => result.push('\\'),
+                Some('"') => result.push('"'),
+                Some('\'') => result.push('\''),
+                Some('0') => result.push('\0'),
+                Some('x') => {
+                    // Handle \xNN hex escape
+                    let hex1 = chars.next().unwrap_or('0');
+                    let hex2 = chars.next().unwrap_or('0');
+                    if let Some(byte) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16).ok() {
+                        result.push(byte as char);
+                    }
+                }
+                Some(other) => {
+                    // Unknown escape, keep as-is
+                    result.push('\\');
+                    result.push(other);
+                }
+                None => result.push('\\'),
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 fn parse_key_binding(input: &str) -> serde_json::Value {
     let trimmed = input.trim();
 
@@ -209,45 +248,83 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     if (trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
     {
+        let content = &trimmed[1..trimmed.len() - 1];
+        // Unescape common escape sequences
+        let unescaped = unescape_string(content);
         return serde_json::json!({
             "type": "text",
-            "value": &trimmed[1..trimmed.len() - 1],
+            "value": unescaped,
             "raw": input,
         });
     }
 
-    // Combo with + separator
-    if trimmed.contains('+') {
-        let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
-        let valid_modifiers = ["ctrl", "alt", "shift", "meta", "win", "cmd"];
+    // Valid special key names (matching controller_zh.html)
+    let valid_keys = [
+        // Basic navigation
+        "enter",
+        "return",
+        "space",
+        "tab",
+        "escape",
+        "esc",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "up",
+        "down",
+        "left",
+        "right",
+        // Modifiers (can also be used as standalone keys)
+        "ctrl",
+        "shift",
+        "alt",
+        "option",
+        // System keys
+        "gui",
+        "win",
+        "meta",
+        "cmd",
+        "command",
+        // F-keys
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
+        // Symbols
+        "plus",
+        "minus",
+        "equal",
+        "semicolon",
+        "quote",
+        "backquote",
+        "backslash",
+        "comma",
+        "period",
+        "slash",
+        "bracketleft",
+        "bracketright",
+    ];
 
-        let all_mods_valid = parts[..parts.len() - 1]
-            .iter()
-            .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
+    let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
 
-        if all_mods_valid {
-            let modifiers: Vec<String> = parts[..parts.len() - 1]
-                .iter()
-                .map(|p| match p.to_lowercase().as_str() {
-                    "win" | "cmd" => "meta".to_string(),
-                    other => other.to_string(),
-                })
-                .collect();
-            return serde_json::json!({
-                "type": "combo",
-                "modifiers": modifiers,
-                "key": parts.last().unwrap().to_uppercase(),
-                "raw": input,
-            });
-        }
-    }
-
-    // Single uppercase letter or digit
+    // Check if input is a single uppercase letter (as combo)
     if trimmed.len() == 1
         && trimmed
             .chars()
             .next()
-            .map_or(false, |c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            .map_or(false, |c| c.is_ascii_uppercase())
     {
         return serde_json::json!({
             "type": "combo",
@@ -255,6 +332,67 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
             "key": trimmed,
             "raw": input,
         });
+    }
+
+    // Check if input is a single digit (as combo)
+    if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
+        return serde_json::json!({
+            "type": "combo",
+            "modifiers": [],
+            "key": trimmed,
+            "raw": input,
+        });
+    }
+
+    // Check if input is a known key name
+    let key_lower = trimmed.to_lowercase();
+    if valid_keys.contains(&key_lower.as_str()) {
+        return serde_json::json!({
+            "type": "combo",
+            "modifiers": [],
+            "key": trimmed.to_uppercase(),
+            "raw": input,
+        });
+    }
+
+    // Combo with + separator
+    if trimmed.contains('+') {
+        let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
+
+        // Check if all parts except last are valid modifiers
+        let all_mods_valid = parts[..parts.len() - 1]
+            .iter()
+            .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
+
+        if all_mods_valid {
+            let last_part = parts.last().unwrap();
+            let last_lower = last_part.to_lowercase();
+
+            // Check if last part is a valid key (known name OR alphanumeric)
+            let is_valid_key = valid_keys.contains(&last_lower.as_str())
+                || (last_part.len() == 1
+                    && last_part
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_alphanumeric()));
+
+            if is_valid_key {
+                let modifiers: Vec<String> = parts[..parts.len() - 1]
+                    .iter()
+                    .map(|p| match p.to_lowercase().as_str() {
+                        "win" | "cmd" => "meta".to_string(),
+                        "option" => "alt".to_string(),
+                        other => other.to_string(),
+                    })
+                    .collect();
+                return serde_json::json!({
+                    "type": "combo",
+                    "modifiers": modifiers,
+                    "key": last_part.to_uppercase(),
+                    "raw": input,
+                });
+            }
+        }
     }
 
     // Default: text
