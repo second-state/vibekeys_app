@@ -3,7 +3,7 @@ use btleplug::platform::Adapter;
 use btleplug::platform::Manager;
 use btleplug::platform::Peripheral as PlatformPeripheral;
 use clap::{Parser, Subcommand};
-use log::{debug, info, warn};
+use log::{debug, info};
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 use tokio::time;
@@ -75,30 +75,29 @@ async fn get_adapter() -> anyhow::Result<(Manager, Adapter)> {
     Ok((manager, adapter))
 }
 
-// Scan and find the target peripheral, retrying until found
+// Scan and find the target peripheral with timeout (20 * 100ms = 2s)
 async fn scan_and_find_peripheral(adapter: &Adapter) -> anyhow::Result<PlatformPeripheral> {
     let mut filter = ScanFilter::default();
     filter.services.push(CONTROLLER_SERVICE_ID);
 
-    loop {
-        adapter.start_scan(filter.clone()).await?;
+    adapter.start_scan(filter.clone()).await?;
 
-        let peripherals = loop {
-            time::sleep(Duration::from_millis(100)).await;
-            let peripherals = adapter.peripherals().await?;
-            if !peripherals.is_empty() {
-                break peripherals;
-            }
-        };
+    for _ in 0..20 {
+        time::sleep(Duration::from_millis(100)).await;
+        let peripherals = adapter.peripherals().await?;
 
-        if let Some(target) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
+        if !peripherals.is_empty() {
             adapter.stop_scan().await?;
-            return Ok(target);
+            if let Some(target) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
+                return Ok(target);
+            }
+            // Restart scan if we found devices but not our target
+            adapter.start_scan(filter.clone()).await?;
         }
-
-        adapter.stop_scan().await?;
-        warn!("Target device not found, retrying...");
     }
+
+    adapter.stop_scan().await?;
+    anyhow::bail!("Device scan timeout (2s)")
 }
 
 // Send data to device (keeps manager alive)
