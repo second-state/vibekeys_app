@@ -36,9 +36,9 @@ vibekeys keymap <KEY> <BINDING>
 | `MIC` | 麦克风键 |
 | `CUSTOM` | 自定义键 |
 | `ESC` | Escape 键 |
-| `GUI` | GUI 键 |
+| `NEXT` | Next 键 |
 | `BACKSPACE` | 退格键 |
-| `SWITCH` | 切换键 |
+| `YOLO` / `Switch` | Yolo 键 |
 | `ACCEPT` | 确认键 |
 | `ROTATE` | 旋转键 |
 
@@ -53,12 +53,12 @@ vibekeys keymap <KEY> <BINDING>
 ```bash
 # 单个按键
 vibekeys keymap ESC A          # 映射为 A 键
-vibekeys keymap GUI 1          # 映射为数字 1
+vibekeys keymap NEXT 1         # 映射为数字 1
 
 # 带修饰键的组合
 vibekeys keymap ESC Ctrl+C     # 映射为 Ctrl+C
 vibekeys keymap CUSTOM Alt+Tab # 映射为 Alt+Tab
-vibekeys keymap GUI Shift+A    # 映射为 Shift+A
+vibekeys keymap NEXT Shift+A   # 映射为 Shift+A
 
 # 支持的修饰键
 # Ctrl, Alt, Shift, Meta, Win, Cmd
@@ -120,8 +120,8 @@ vibekeys keymap MIC '"I am using Claude Code"'
 # ESC 键 → Ctrl+C 中断
 vibekeys keymap ESC Ctrl+C
 
-# GUI 键 → 打开命令面板
-vibekeys keymap GUI Ctrl+Shift+P
+# NEXT 键 → 打开命令面板
+vibekeys keymap NEXT Ctrl+Shift+P
 
 # CUSTOM 键 → Alt+Tab 切换窗口
 vibekeys keymap CUSTOM Alt+Tab

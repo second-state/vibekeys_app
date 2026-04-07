@@ -38,9 +38,9 @@ Configures one key at a time. The device merges it into the existing keymap.
 | `MIC` | Microphone key |
 | `CUSTOM` | Custom key |
 | `ESC` | Escape key |
-| `GUI` | GUI key |
+| `NEXT` | Next key |
 | `BACKSPACE` | Backspace key |
-| `SWITCH` | Switch key |
+| `YOLO` / `Switch` | Yolo key |
 | `ACCEPT` | Accept key |
 | `ROTATE` | Rotate key |
 
@@ -55,12 +55,12 @@ Maps a key to a keyboard shortcut.
 ```bash
 # Single key
 vibekeys keymap ESC A          # Map to A key
-vibekeys keymap GUI 1          # Map to digit 1
+vibekeys keymap NEXT 1         # Map to digit 1
 
 # With modifiers
 vibekeys keymap ESC Ctrl+C     # Map to Ctrl+C
 vibekeys keymap CUSTOM Alt+Tab # Map to Alt+Tab
-vibekeys keymap GUI Shift+A    # Map to Shift+A
+vibekeys keymap NEXT Shift+A    # Map to Shift+A
 
 # Supported modifiers
 # Ctrl, Alt, Shift, Meta, Win, Cmd
@@ -122,8 +122,8 @@ vibekeys keymap MIC '"I am using Claude Code"'
 # ESC key → Ctrl+C interrupt
 vibekeys keymap ESC Ctrl+C
 
-# GUI key → open command palette
-vibekeys keymap GUI Ctrl+Shift+P
+# NEXT key → open command palette
+vibekeys keymap NEXT Ctrl+Shift+P
 
 # CUSTOM key → Alt+Tab switch window
 vibekeys keymap CUSTOM Alt+Tab

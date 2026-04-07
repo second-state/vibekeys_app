@@ -27,7 +27,7 @@ enum Command {
     },
     /// Configure key mapping (merged, can be done one key at a time)
     Keymap {
-        /// Key name (MIC, CUSTOM, ESC, GUI, BACKSPACE, SWITCH, ACCEPT, ROTATE)
+        /// Key name (MIC, CUSTOM, ESC, NEXT, BACKSPACE, SWITCH, ACCEPT, ROTATE)
         key: String,
         /// Key binding (e.g., "A", "Ctrl+C", Alt+Tab", "\"text\"")
         binding: String,
@@ -180,7 +180,7 @@ fn truncate(s: &str, max_len: usize) -> String {
 async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
     let key_upper = key.to_uppercase();
 
-    // Validate key name
+    // Validate key name (before alias mapping)
     let valid_keys = [
         "MIC",
         "CUSTOM",
@@ -190,13 +190,21 @@ async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
         "SWITCH",
         "ACCEPT",
         "ROTATE",
+        "YOLO", // alias for SWITCH
     ];
     if !valid_keys.contains(&key_upper.as_str()) {
         anyhow::bail!("Invalid key name. Valid keys: {}", valid_keys.join(", "));
     }
 
+    // Map aliases to actual key names
+    let key_mapped = match key_upper.as_str() {
+        "YOLO" => "SWITCH".to_string(),
+        _ => key_upper,
+    };
+
+    // Use the mapped key name for the config
     let parsed = parse_key_binding(binding);
-    let config = serde_json::json!({ key_upper: parsed });
+    let config = serde_json::json!({ key_mapped: parsed });
     let json_str = config.to_string();
     info!("Sending keymap: {}", json_str);
 
