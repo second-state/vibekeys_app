@@ -40,6 +40,19 @@ cargo build --release
 # 编译产物位于 target/release/vibekeys
 ```
 
+### 安装 Claude Code 插件
+
+你也可以安装 [VibeKeys 插件](https://github.com/second-state/marketplace) 让 Claude Code 自动在键盘上显示状态。
+
+在终端运行以下命令：
+```bash
+# 添加 Second State marketplace
+claude plugin marketplace add second-state/marketplace
+
+# 安装 VibeKeys 插件
+claude plugin install vibekeys@second-state-tools
+```
+
 ## 用法
 
 ### 发送文字到键盘显示

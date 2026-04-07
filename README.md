@@ -42,6 +42,19 @@ cargo build --release
 # The binary will be at target/release/vibekeys
 ```
 
+### Install Claude Code Plugin
+
+Alternatively, install the [VibeKeys plugin](https://github.com/second-state/marketplace) for Claude Code to automatically display status on your keyboard.
+
+Run these commands in your terminal:
+```bash
+# Add Second State marketplace
+claude plugin marketplace add second-state/marketplace
+
+# Install VibeKeys plugin
+claude plugin install vibekeys@second-state-tools
+```
+
 ## Usage
 
 ### Send text to keyboard display
