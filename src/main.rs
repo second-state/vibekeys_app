@@ -37,7 +37,7 @@ enum Command {
 }
 
 // Controller Service UUID
-const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x9c80ffb6_affa_4083_944a_91e34c88bd76);
+const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
 
 // Keyboard Display Characteristic UUID
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
