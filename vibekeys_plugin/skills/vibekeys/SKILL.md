@@ -15,28 +15,36 @@ The `vibekeys` binary must be installed and the VibeKeys MAX device must be powe
 
 Download the prebuilt binary for your platform from [Releases](https://github.com/second-state/vibekeys_app/releases).
 
+**Linux:**
 ```bash
-# Linux example
-curl -LO https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
 chmod +x vibekeys-linux-x64
 sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**macOS (ARM64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-macos-arm64
+chmod +x vibekeys-macos-arm64
+sudo mv vibekeys-macos-arm64 /usr/local/bin/vibekeys
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-windows-x64.exe" -OutFile "vibekeys.exe"
+# Add to PATH or move to a directory in PATH
 ```
 
 ### Install from source
 
 ```bash
-# Linux: install BLE dependencies first
+# Install dependencies (Linux)
 sudo apt-get install libudev-dev libdbus-1-dev pkg-config
 
-# Build and install
+# Build
 cargo build --release
-sudo cp target/release/vibekeys /usr/local/bin/
-```
 
-Verify installation:
-
-```bash
-vibekeys --version
+# The binary will be at target/release/vibekeys
 ```
 
 ## Commands
@@ -70,9 +78,11 @@ Each call configures one key. The device merges it into the existing keymap.
 | `ESC` | Escape key |
 | `NEXT` | Next key |
 | `BACKSPACE` | Backspace key |
-| `SWITCH` | Switch key |
+| `YOLO` | Yolo key |
 | `ACCEPT` | Accept key |
 | `ROTATE` | Rotate key |
+
+Note: `YOLO` is an alias for the SWITCH key.
 
 ## Binding Formats
 
