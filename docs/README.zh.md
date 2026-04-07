@@ -38,7 +38,7 @@ vibekeys keymap <KEY> <BINDING>
 | `ESC` | Escape 键 |
 | `NEXT` | Next 键 |
 | `BACKSPACE` | 退格键 |
-| `YOLO` / `Switch` | Yolo 键 |
+| `YOLO` | Yolo 键 |
 | `ACCEPT` | 确认键 |
 | `ROTATE` | 旋转键 |
 

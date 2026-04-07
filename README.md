@@ -40,7 +40,7 @@ Configures one key at a time. The device merges it into the existing keymap.
 | `ESC` | Escape key |
 | `NEXT` | Next key |
 | `BACKSPACE` | Backspace key |
-| `YOLO` / `Switch` | Yolo key |
+| `YOLO` | Yolo key |
 | `ACCEPT` | Accept key |
 | `ROTATE` | Rotate key |
 
