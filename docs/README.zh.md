@@ -4,11 +4,40 @@ BLE CLI 工具，用于控制 [VibeKeys MAX](https://github.com/L-jasmine/vibeke
 
 ## 安装
 
+### 下载预编译二进制
+
+从 [GitHub Releases](https://github.com/second-state/vibekeys_app/releases) 下载最新版本。
+
+**Linux:**
 ```bash
-# Linux 需要安装依赖
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
+chmod +x vibekeys-linux-x64
+sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**macOS (ARM64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-macos-arm64
+chmod +x vibekeys-macos-arm64
+sudo mv vibekeys-macos-arm64 /usr/local/bin/vibekeys
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-windows-x64.exe" -OutFile "vibekeys.exe"
+# 添加到 PATH 或移动到 PATH 中的目录
+```
+
+### 从源码构建
+
+```bash
+# 安装依赖 (Linux)
 sudo apt-get install libudev-dev libdbus-1-dev pkg-config
 
+# 构建
 cargo build --release
+
+# 编译产物位于 target/release/vibekeys
 ```
 
 ## 用法

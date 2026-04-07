@@ -6,11 +6,40 @@ A BLE CLI tool for controlling the [VibeKeys MAX](https://github.com/L-jasmine/v
 
 ## Installation
 
+### Download Pre-built Binary
+
+Download the latest release from [GitHub Releases](https://github.com/second-state/vibekeys_app/releases).
+
+**Linux:**
 ```bash
-# Linux dependencies
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
+chmod +x vibekeys-linux-x64
+sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**macOS (ARM64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-macos-arm64
+chmod +x vibekeys-macos-arm64
+sudo mv vibekeys-macos-arm64 /usr/local/bin/vibekeys
+```
+
+**Windows (PowerShell):**
+```powershell
+Invoke-WebRequest -Uri "https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-windows-x64.exe" -OutFile "vibekeys.exe"
+# Add to PATH or move to a directory in PATH
+```
+
+### Build from Source
+
+```bash
+# Install dependencies (Linux)
 sudo apt-get install libudev-dev libdbus-1-dev pkg-config
 
+# Build
 cargo build --release
+
+# The binary will be at target/release/vibekeys
 ```
 
 ## Usage
