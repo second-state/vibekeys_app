@@ -104,21 +104,18 @@ async fn scan_and_find_peripheral(adapter: &Adapter) -> anyhow::Result<PlatformP
 async fn send_to_device(char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
     let t0 = Instant::now();
 
-    let _manager = {
-        let (manager, adapter) = get_adapter().await?;
-        info!("[{:.0?}] Adapter ready", t0.elapsed());
+    let (_manager, adapter) = get_adapter().await?;
+    info!("[{:.0?}] Adapter ready", t0.elapsed());
 
-        let peripheral = scan_and_find_peripheral(&adapter).await?;
-        connect_and_discover(&peripheral).await?;
-        info!("[{:.0?}] Connected & discovered", t0.elapsed());
+    let peripheral = scan_and_find_peripheral(&adapter).await?;
+    connect_and_discover(&peripheral).await?;
+    info!("[{:.0?}] Connected & discovered", t0.elapsed());
 
-        send_message(&peripheral, char_uuid, data).await?;
-        info!("[{:.0?}] Data sent", t0.elapsed());
+    send_message(&peripheral, char_uuid, data).await?;
+    info!("[{:.0?}] Data sent", t0.elapsed());
 
-        peripheral.disconnect().await.ok();
-        info!("[{:.0?}] Total", t0.elapsed());
-        manager
-    };
+    info!("[{:.0?}] Total", t0.elapsed());
+
     Ok(())
 }
 
