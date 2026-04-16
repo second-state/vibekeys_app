@@ -135,7 +135,14 @@ async fn handle_hook() -> anyhow::Result<()> {
             let prompt = hook["prompt"].as_str().unwrap_or("");
             format!("[user] {}", truncate(prompt, 80))
         }
-        "Stop" => "[stopped]".to_string(),
+        "Stop" => {
+            let msg = hook["last_assistant_message"].as_str().unwrap_or("");
+            if msg.is_empty() {
+                "[stopped]".to_string()
+            } else {
+                format!("[done]\n{}", truncate(msg, 150))
+            }
+        }
         "Notification" => {
             let msg = hook["message"].as_str().unwrap_or("");
             format!("[notify] {}", truncate(msg, 80))
