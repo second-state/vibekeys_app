@@ -8,7 +8,6 @@ use std::fs;
 use std::io::{self, Read, Write as IoWrite};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{oneshot, Mutex};
 
 const APP_NAME: &str = "vibekeys";
@@ -88,30 +87,34 @@ fn log_message(msg: &str) {
     }
 }
 
-// ===== HTTP Client (minimal, localhost only) =====
+// ===== HTTP Client =====
 
 async fn http_request(method: &str, port: u16, path: &str, body: Option<&[u8]>) -> Option<String> {
-    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
-        .await
+    // Disable proxy for localhost
+    let url = reqwest::Url::parse(&format!("http://127.0.0.1:{}{}", port, path)).ok()?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build()
         .ok()?;
-    let header = match body {
-        Some(b) => format!(
-            "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            method, path, port, b.len()
-        ),
-        None => format!(
-            "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-            method, path, port
-        ),
+
+    let req = match method {
+        "GET" => client.get(url),
+        "POST" => {
+            if let Some(b) = body {
+                client.post(url).body(b.to_vec())
+            } else {
+                client.post(url)
+            }
+        }
+        _ => return None,
     };
-    stream.write_all(header.as_bytes()).await.ok()?;
-    if let Some(b) = body {
-        stream.write_all(b).await.ok()?;
+
+    match req.send().await {
+        Ok(resp) => resp.text().await.ok(),
+        Err(_) => None,
     }
-    let mut resp = Vec::new();
-    stream.read_to_end(&mut resp).await.ok()?;
-    let s = String::from_utf8_lossy(&resp);
-    s.split("\r\n\r\n").nth(1).map(|b| b.to_string())
 }
 
 async fn check_server(port: u16) -> bool {
@@ -201,6 +204,8 @@ enum BleCmd {
 
 async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
     let mut peripheral: Option<PlatformPeripheral> = None;
+    let mut first_connect_deadline =
+        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
     loop {
         let need_connect = match &peripheral {
             None => true,
@@ -212,26 +217,56 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                 Ok(p) => {
                     log_message("BLE device connected");
                     peripheral = Some(p);
+                    first_connect_deadline = None; // Connected, clear deadline
                 }
                 Err(e) => {
-                    log_message(&format!("BLE scan failed: {}, retrying in 5s", e));
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    continue;
+                    // If we were connected before and lost connection, exit
+                    if peripheral.is_some() {
+                        log_message(&format!("BLE disconnected: {}", e));
+                        return;
+                    }
+                    // First connection attempt - check deadline
+                    if let Some(deadline) = first_connect_deadline {
+                        if tokio::time::Instant::now() > deadline {
+                            log_message("First connection timeout, exiting");
+                            return;
+                        }
+                        log_message(&format!("BLE scan failed: {}, retrying", e));
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    } else {
+                        // Should not happen
+                        return;
+                    }
                 }
             }
         }
         if let Some(ref p) = peripheral {
-            tokio::select! {
-                cmd = rx.recv() => {
-                    match cmd {
-                        Some(BleCmd::Send { char_uuid, data, reply }) => {
-                            let result = send_ble(p, char_uuid, &data).await;
-                            let _ = reply.send(result.map_err(|e| e.to_string()));
-                        }
-                        None => return,
+            match rx.recv().await {
+                Some(BleCmd::Send {
+                    char_uuid,
+                    data,
+                    reply,
+                }) => {
+                    // Check connection before sending with 1s timeout
+                    log_message("check connect status");
+                    let connected =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false);
+
+                    if !connected {
+                        log_message("BLE disconnected before send, exiting");
+                        let _ = reply.send(Err("BLE disconnected".to_string()));
+                        return;
                     }
+
+                    log_message("start send");
+                    let result = send_ble(p, char_uuid, &data).await;
+                    log_message("send end");
+                    let _ = reply.send(result.map_err(|e| e.to_string()));
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+                None => return,
             }
         }
     }
@@ -292,12 +327,30 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
 
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     state.counter.fetch_add(1, Ordering::Relaxed);
-    ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await
+    let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log_message("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
 }
 
 async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     state.counter.fetch_add(1, Ordering::Relaxed);
-    ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await
+    let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log_message("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
 }
 
 async fn run_server(port: u16) {
@@ -691,40 +744,39 @@ fn main() {
     }
 
     // Other commands: check if server is already running, if not start it
-    let should_start = {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server_running = rt.block_on(check_server(port));
+
+    if server_running {
+        rt.block_on(forward_command(port, &cli.command));
+        return;
+    }
+
+    // Server not running, need to start it
+    drop(rt);
+
+    // Spawn child process to run server, then wait for it to be ready
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg("start")
+        .spawn()
+        .expect("Failed to start server");
+
+    // Wait for server to be ready (poll health endpoint)
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         if rt.block_on(check_server(port)) {
             rt.block_on(forward_command(port, &cli.command));
-            false
-        } else {
-            true
-        }
-    };
-
-    if !should_start {
-        return;
-    }
-
-    // Daemonize (Unix only, must be before creating tokio runtime)
-    #[cfg(unix)]
-    {
-        if let Err(e) = do_daemonize() {
-            eprintln!("Failed to daemonize: {}", e);
-            std::process::exit(1);
+            break;
         }
     }
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(async {
-        run_server(port).await;
-        // Forward the command after server is ready
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        forward_command(port, &cli.command).await;
-    });
+    // Ensure child is still running (don't wait for it, it's a daemon)
+    let _ = child.try_wait();
 }
