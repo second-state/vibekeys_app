@@ -30,11 +30,13 @@ const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b
 #[command(name = "vibekeys", version, long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Option<Command>,
+    command: Command,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Start the vibekeys server (runs in background)
+    Start,
     /// Send a message to the connected device
     Send { message: String },
     /// Configure key mapping
@@ -337,6 +339,7 @@ async fn run_server(port: u16) {
 
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
+        Command::Start | Command::Stop => unreachable!(),
         Command::Send { message } => {
             match http_request("POST", port, "/send", Some(message.as_bytes())).await {
                 Some(r) => print!("{}", r),
@@ -364,7 +367,6 @@ async fn forward_command(port: u16, cmd: &Command) {
                 http_request("POST", port, "/send", Some(msg.as_bytes())).await;
             }
         }
-        Command::Stop => unreachable!(),
     }
 }
 
@@ -644,7 +646,7 @@ fn main() {
     let port = get_port();
 
     // Handle stop
-    if matches!(&cli.command, Some(Command::Stop)) {
+    if matches!(cli.command, Command::Stop) {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -658,18 +660,44 @@ fn main() {
         return;
     }
 
-    // Check if server is already running
+    // Handle start
+    if matches!(cli.command, Command::Start) {
+        // Check if already running
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        if rt.block_on(check_server(port)) {
+            println!("vibekeys server already running on port {}", port);
+            return;
+        }
+        drop(rt);
+
+        // Daemonize (Unix only, must be before creating tokio runtime)
+        #[cfg(unix)]
+        {
+            if let Err(e) = do_daemonize() {
+                eprintln!("Failed to daemonize: {}", e);
+                std::process::exit(1);
+            }
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(run_server(port));
+        return;
+    }
+
+    // Other commands: check if server is already running, if not start it
     let should_start = {
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
         if rt.block_on(check_server(port)) {
-            if let Some(cmd) = &cli.command {
-                rt.block_on(forward_command(port, cmd));
-            } else {
-                println!("vibekeys server running on port {}", port);
-            }
+            rt.block_on(forward_command(port, &cli.command));
             false
         } else {
             true
@@ -693,5 +721,10 @@ fn main() {
         .enable_all()
         .build()
         .unwrap();
-    rt.block_on(run_server(port));
+    rt.block_on(async {
+        run_server(port).await;
+        // Forward the command after server is ready
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        forward_command(port, &cli.command).await;
+    });
 }
