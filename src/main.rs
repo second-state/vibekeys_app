@@ -40,8 +40,10 @@ enum Command {
     Send { message: String },
     /// Configure key mapping
     Keymap { key: String, binding: String },
-    /// Read hook JSON from stdin and forward to device
-    Hook,
+    /// Read Claude Code hook JSON from stdin and forward to device
+    Claude,
+    /// Read Codex hook JSON from stdin and forward to device
+    Codex,
     /// Stop the running server
     Stop,
 }
@@ -214,10 +216,17 @@ async fn forward_command(port: u16, cmd: &Command) {
                 None => eprintln!("Failed to connect to server"),
             }
         }
-        Command::Hook => {
+        Command::Claude => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
-            if let Some(msg) = format_hook_message(&input) {
+            if let Some(msg) = format_claude_message(&input) {
+                http_request("POST", port, "/send", Some(msg.as_bytes())).await;
+            }
+        }
+        Command::Codex => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            if let Some(msg) = format_codex_message(&input) {
                 http_request("POST", port, "/send", Some(msg.as_bytes())).await;
             }
         }
@@ -236,7 +245,7 @@ fn build_keymap_config(key: &str, binding: &str) -> String {
     serde_json::json!({ key_mapped: parsed }).to_string()
 }
 
-fn format_hook_message(input: &str) -> Option<String> {
+fn format_claude_message(input: &str) -> Option<String> {
     let hook: serde_json::Value = serde_json::from_str(input).ok()?;
     let event = hook["hook_event_name"].as_str().unwrap_or("");
     Some(match event {
@@ -268,6 +277,39 @@ fn format_hook_message(input: &str) -> Option<String> {
         "StopFailure" => {
             let error = hook["error"].as_str().unwrap_or("unknown");
             format!("[error] {}", error)
+        }
+        _ => return None,
+    })
+}
+
+fn format_codex_message(input: &str) -> Option<String> {
+    let hook: serde_json::Value = serde_json::from_str(input).ok()?;
+    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    Some(match event {
+        "UserPromptSubmit" => {
+            let prompt = hook["prompt"].as_str().unwrap_or("");
+            format!("[user] {}", truncate(prompt, 80))
+        }
+        "Stop" => {
+            let msg = hook["last_assistant_message"].as_str().unwrap_or("");
+            if msg.is_empty() {
+                "[stopped]".to_string()
+            } else {
+                format!("[done]\n{}", truncate(msg, 150))
+            }
+        }
+        "PreToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[tool] {}", tool)
+        }
+        "PostToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[done] {}", tool)
+        }
+        "SessionStart" => "[working]".to_string(),
+        "PermissionRequest" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[perm] {}", tool)
         }
         _ => return None,
     })
