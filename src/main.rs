@@ -1,7 +1,7 @@
 use axum::{
-    Router,
     extract::State,
     routing::{get, post},
+    Router,
 };
 use clap::{Parser, Subcommand};
 use std::fs;
@@ -9,16 +9,16 @@ use std::io::{self, Read, Write as IoWrite};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
 const APP_NAME: &str = "vibekeys";
 const DEFAULT_PORT: u16 = 42837;
 
+use anyhow;
 use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
-use uuid::Uuid;
 use tokio::sync::mpsc;
-use anyhow;
+use uuid::Uuid;
 
 const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
@@ -41,6 +41,8 @@ enum Command {
     Keymap { key: String, binding: String },
     /// Read Claude Code hook JSON from stdin and forward to device
     Claude,
+    /// Alias for 'claude' - reads Claude Code hook JSON from stdin and forwards to device
+    Hook,
     /// Read Codex hook JSON from stdin and forward to device
     Codex,
     /// Stop the running server
@@ -65,8 +67,10 @@ fn log_message(msg: &str) {
         .as_secs();
     let line = format!("[{}] {} {}\n", ts, APP_NAME, msg);
     #[cfg(unix)]
-    if let Ok(mut f) =
-        fs::OpenOptions::new().create(true).append(true).open("/tmp/vibekeys.log")
+    if let Ok(mut f) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/vibekeys.log")
     {
         let _ = f.write_all(line.as_bytes());
     }
@@ -84,12 +88,7 @@ fn log_message(msg: &str) {
 
 // ===== HTTP Client (minimal, localhost only) =====
 
-async fn http_request(
-    method: &str,
-    port: u16,
-    path: &str,
-    body: Option<&[u8]>,
-) -> Option<String> {
+async fn http_request(method: &str, port: u16, path: &str, body: Option<&[u8]>) -> Option<String> {
     let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
         .await
         .ok()?;
@@ -351,7 +350,7 @@ async fn forward_command(port: u16, cmd: &Command) {
                 None => eprintln!("Failed to connect to server"),
             }
         }
-        Command::Claude => {
+        Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             if let Some(msg) = format_claude_message(&input) {
@@ -509,11 +508,55 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     }
 
     let valid_keys = [
-        "enter", "return", "space", "tab", "escape", "esc", "backspace", "delete", "insert",
-        "home", "end", "pageup", "pagedown", "up", "down", "left", "right", "ctrl", "shift",
-        "alt", "option", "gui", "win", "meta", "cmd", "command", "f1", "f2", "f3", "f4", "f5",
-        "f6", "f7", "f8", "f9", "f10", "f11", "f12", "plus", "minus", "equal", "semicolon",
-        "quote", "backquote", "backslash", "comma", "period", "slash", "bracketleft",
+        "enter",
+        "return",
+        "space",
+        "tab",
+        "escape",
+        "esc",
+        "backspace",
+        "delete",
+        "insert",
+        "home",
+        "end",
+        "pageup",
+        "pagedown",
+        "up",
+        "down",
+        "left",
+        "right",
+        "ctrl",
+        "shift",
+        "alt",
+        "option",
+        "gui",
+        "win",
+        "meta",
+        "cmd",
+        "command",
+        "f1",
+        "f2",
+        "f3",
+        "f4",
+        "f5",
+        "f6",
+        "f7",
+        "f8",
+        "f9",
+        "f10",
+        "f11",
+        "f12",
+        "plus",
+        "minus",
+        "equal",
+        "semicolon",
+        "quote",
+        "backquote",
+        "backslash",
+        "comma",
+        "period",
+        "slash",
+        "bracketleft",
         "bracketright",
     ];
     let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
@@ -562,7 +605,10 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
             let last_lower = last_part.to_lowercase();
             let is_valid_key = valid_keys.contains(&last_lower.as_str())
                 || (last_part.len() == 1
-                    && last_part.chars().next().map_or(false, |c| c.is_alphanumeric()));
+                    && last_part
+                        .chars()
+                        .next()
+                        .map_or(false, |c| c.is_alphanumeric()));
 
             if is_valid_key {
                 let modifiers: Vec<String> = parts[..parts.len() - 1]
@@ -599,7 +645,10 @@ fn main() {
 
     // Handle stop
     if matches!(&cli.command, Some(Command::Stop)) {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async {
             match http_request("GET", port, "/shutdown", None).await {
                 Some(_) => println!("Server stopped"),
@@ -611,7 +660,10 @@ fn main() {
 
     // Check if server is already running
     let should_start = {
-        let rt = tokio::runtime::Runtime::new().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         if rt.block_on(check_server(port)) {
             if let Some(cmd) = &cli.command {
                 rt.block_on(forward_command(port, cmd));
@@ -637,6 +689,9 @@ fn main() {
         }
     }
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
     rt.block_on(run_server(port));
 }
