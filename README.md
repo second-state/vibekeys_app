@@ -57,6 +57,18 @@ claude plugin install vibekeys@second-state-tools
 
 ## Usage
 
+### Server Mode
+
+VibeKeys runs as a background daemon server. The first command starts the server, and subsequent commands communicate with it.
+
+```bash
+# Start the server (runs in background)
+vibekeys
+
+# Stop the server
+vibekeys stop
+```
+
 ### Send text to keyboard display
 
 ```bash
@@ -176,10 +188,14 @@ vibekeys keymap BACKSPACE Backspace
 
 ## Hook Mode
 
-Reads Claude Code hook JSON events from stdin and forwards them to the keyboard display. Used for Claude Code hooks integration.
+Reads hook JSON events from stdin and forwards them to the keyboard display.
 
 ```bash
-vibekeys hook
+# For Claude Code (alias: hook)
+vibekeys claude
+
+# For Codex
+vibekeys codex
 ```
 
 ### Supported Events
