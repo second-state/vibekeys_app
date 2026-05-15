@@ -1,136 +1,245 @@
-use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
-use btleplug::platform::Adapter;
-use btleplug::platform::Manager;
-use btleplug::platform::Peripheral as PlatformPeripheral;
+use axum::{
+    Router,
+    extract::State,
+    routing::{get, post},
+};
 use clap::{Parser, Subcommand};
-use log::{debug, info};
-use std::io::{self, Read};
-use std::time::{Duration, Instant};
-use tokio::time;
-use uuid::Uuid;
+use std::fs;
+use std::io::{self, Read, Write as IoWrite};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::{Mutex, oneshot};
 
-/// BLE Controller CLI
+const APP_NAME: &str = "vibekeys";
+const DEFAULT_PORT: u16 = 42837;
+
+// TODO: uncomment when bluetooth is available
+// use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
+// use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
+// use uuid::Uuid;
+// use tokio::sync::mpsc;
+// use anyhow;
+//
+// const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
+// const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
+// const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+
+// ===== CLI =====
+
 #[derive(Parser, Debug)]
-#[command(name = "vibekeys")]
-#[command(version, long_about = None)]
+#[command(name = "vibekeys", version, long_about = None)]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Send a message to the connected device
-    Send {
-        /// Message to send
-        message: String,
-    },
-    /// Configure key mapping (merged, can be done one key at a time)
-    Keymap {
-        /// Key name (MIC, CUSTOM, ESC, NEXT, BACKSPACE, SWITCH, ACCEPT, ROTATE)
-        key: String,
-        /// Key binding (e.g., "A", "Ctrl+C", Alt+Tab", "\"text\"")
-        binding: String,
-    },
-    /// Read Claude Code hook JSON from stdin and forward to device
+    Send { message: String },
+    /// Configure key mapping
+    Keymap { key: String, binding: String },
+    /// Read hook JSON from stdin and forward to device
     Hook,
+    /// Stop the running server
+    Stop,
 }
 
-// Controller Service UUID
-const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
+// ===== Port =====
 
-// Keyboard Display Characteristic UUID
-const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
+fn get_port() -> u16 {
+    std::env::var("VIBEKEYS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
 
-// Keymap Config Characteristic UUID
-const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+// ===== Logging =====
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    env_logger::init();
-
-    let cli = Cli::parse();
-
-    match cli.command {
-        Command::Send { message } => {
-            send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await?;
-            Ok(())
+fn log_message(msg: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let line = format!("[{}] {} {}\n", ts, APP_NAME, msg);
+    #[cfg(unix)]
+    if let Ok(mut f) =
+        fs::OpenOptions::new().create(true).append(true).open("/tmp/vibekeys.log")
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+    #[cfg(windows)]
+    {
+        let p = std::env::var("LOCALAPPDATA")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("vibekeys.log");
+        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(p) {
+            let _ = f.write_all(line.as_bytes());
         }
-        Command::Keymap { key, binding } => {
-            send_keymap(&key, &binding).await?;
-            Ok(())
-        }
-        Command::Hook => handle_hook().await,
     }
 }
 
-// Get Bluetooth adapter
-async fn get_adapter() -> anyhow::Result<(Manager, Adapter)> {
-    let manager = Manager::new().await?;
-    let adapters = manager.adapters().await?;
-    let adapter = adapters
-        .into_iter()
-        .next()
-        .expect("No Bluetooth adapter found");
-    Ok((manager, adapter))
-}
+// ===== HTTP Client (minimal, localhost only) =====
 
-// Scan and find the target peripheral with timeout (20 * 100ms = 2s)
-async fn scan_and_find_peripheral(adapter: &Adapter) -> anyhow::Result<PlatformPeripheral> {
-    let mut filter = ScanFilter::default();
-    filter.services.push(CONTROLLER_SERVICE_ID);
-
-    adapter.start_scan(filter.clone()).await?;
-
-    for _ in 0..20 {
-        time::sleep(Duration::from_millis(100)).await;
-        let peripherals = adapter.peripherals().await?;
-
-        if !peripherals.is_empty() {
-            adapter.stop_scan().await?;
-            if let Some(target) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
-                return Ok(target);
-            }
-            // Restart scan if we found devices but not our target
-            adapter.start_scan(filter.clone()).await?;
-        }
+async fn http_request(
+    method: &str,
+    port: u16,
+    path: &str,
+    body: Option<&[u8]>,
+) -> Option<String> {
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port))
+        .await
+        .ok()?;
+    let header = match body {
+        Some(b) => format!(
+            "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            method, path, port, b.len()
+        ),
+        None => format!(
+            "{} {} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            method, path, port
+        ),
+    };
+    stream.write_all(header.as_bytes()).await.ok()?;
+    if let Some(b) = body {
+        stream.write_all(b).await.ok()?;
     }
-
-    adapter.stop_scan().await?;
-    anyhow::bail!("Device scan timeout (2s)")
+    let mut resp = Vec::new();
+    stream.read_to_end(&mut resp).await.ok()?;
+    let s = String::from_utf8_lossy(&resp);
+    s.split("\r\n\r\n").nth(1).map(|b| b.to_string())
 }
 
-// Send data to device (keeps manager alive)
-async fn send_to_device(char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
-    let t0 = Instant::now();
+async fn check_server(port: u16) -> bool {
+    http_request("GET", port, "/health", None)
+        .await
+        .map(|s| s.trim() == "ok")
+        .unwrap_or(false)
+}
 
-    let (_manager, adapter) = get_adapter().await?;
-    info!("[{:.0?}] Adapter ready", t0.elapsed());
+// ===== Daemon (Unix) =====
 
-    let peripheral = scan_and_find_peripheral(&adapter).await?;
-    connect_and_discover(&peripheral).await?;
-    info!("[{:.0?}] Connected & discovered", t0.elapsed());
-
-    send_message(&peripheral, char_uuid, data).await?;
-    info!("[{:.0?}] Data sent", t0.elapsed());
-
-    info!("[{:.0?}] Total", t0.elapsed());
-
+#[cfg(unix)]
+fn do_daemonize() -> Result<(), Box<dyn std::error::Error>> {
+    use daemonize::Daemonize;
+    Daemonize::new().start()?;
     Ok(())
 }
 
-// Handle Claude Code hook input from stdin
-async fn handle_hook() -> anyhow::Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).ok();
+// ===== Axum HTTP Server =====
 
-    let hook: serde_json::Value = match serde_json::from_str(&input) {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
+struct AppState {
+    // ble_tx: mpsc::Sender<BleCmd>,  // TODO: uncomment
+    counter: AtomicU64,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+async fn health_handler() -> &'static str {
+    "ok"
+}
+
+async fn root_handler(State(state): State<Arc<AppState>>) -> String {
+    let count = state.counter.fetch_add(1, Ordering::Relaxed) + 1;
+    format!("vibekeys server running\nRequests: {}\n", count)
+}
+
+async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
+    log_message("Shutdown requested");
+    let tx = state.shutdown_tx.lock().await.take();
+    if let Some(tx) = tx {
+        let _ = tx.send(());
+    }
+    "shutting down\n".to_string()
+}
+
+async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    state.counter.fetch_add(1, Ordering::Relaxed);
+    log_message(&format!("send: {}", body));
+    "ok\n".to_string()
+}
+
+async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    state.counter.fetch_add(1, Ordering::Relaxed);
+    log_message(&format!("keymap: {}", body));
+    "ok\n".to_string()
+}
+
+async fn run_server(port: u16) {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    let state = Arc::new(AppState {
+        counter: AtomicU64::new(0),
+        shutdown_tx: Mutex::new(Some(shutdown_tx)),
+    });
+
+    let app = Router::new()
+        .route("/", get(root_handler))
+        .route("/health", get(health_handler))
+        .route("/shutdown", get(shutdown_handler))
+        .route("/send", post(send_handler))
+        .route("/keymap", post(keymap_handler))
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    log_message(&format!("Listening on {}", addr));
+    println!("vibekeys server started on port {}", port);
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+
+    log_message("Server stopped");
+}
+
+// ===== Command Forwarding =====
+
+async fn forward_command(port: u16, cmd: &Command) {
+    match cmd {
+        Command::Send { message } => {
+            match http_request("POST", port, "/send", Some(message.as_bytes())).await {
+                Some(r) => print!("{}", r),
+                None => eprintln!("Failed to connect to server"),
+            }
+        }
+        Command::Keymap { key, binding } => {
+            let config = build_keymap_config(key, binding);
+            match http_request("POST", port, "/keymap", Some(config.as_bytes())).await {
+                Some(r) => print!("{}", r),
+                None => eprintln!("Failed to connect to server"),
+            }
+        }
+        Command::Hook => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            if let Some(msg) = format_hook_message(&input) {
+                http_request("POST", port, "/send", Some(msg.as_bytes())).await;
+            }
+        }
+        Command::Stop => unreachable!(),
+    }
+}
+
+fn build_keymap_config(key: &str, binding: &str) -> String {
+    let key_upper = key.to_uppercase();
+    let key_mapped = if key_upper == "YOLO" {
+        "SWITCH".to_string()
+    } else {
+        key_upper
     };
-    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    let parsed = parse_key_binding(binding);
+    serde_json::json!({ key_mapped: parsed }).to_string()
+}
 
-    let message = match event {
+fn format_hook_message(input: &str) -> Option<String> {
+    let hook: serde_json::Value = serde_json::from_str(input).ok()?;
+    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    Some(match event {
         "UserPromptSubmit" => {
             let prompt = hook["prompt"].as_str().unwrap_or("");
             format!("[user] {}", truncate(prompt, 80))
@@ -160,17 +269,11 @@ async fn handle_hook() -> anyhow::Result<()> {
             let error = hook["error"].as_str().unwrap_or("unknown");
             format!("[error] {}", error)
         }
-        _ => {
-            info!("Unhandled hook event: {}", event);
-            return Ok(());
-        }
-    };
-
-    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes())
-        .await
-        .ok();
-    Ok(())
+        _ => return None,
+    })
 }
+
+// ===== Parsing Utilities =====
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -180,46 +283,9 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-// Send keymap configuration
-async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
-    let key_upper = key.to_uppercase();
-
-    // Validate key name (before alias mapping)
-    let valid_keys = [
-        "MIC",
-        "CUSTOM",
-        "ESC",
-        "NEXT",
-        "BACKSPACE",
-        "SWITCH",
-        "ACCEPT",
-        "ROTATE",
-        "YOLO", // alias for SWITCH
-    ];
-    if !valid_keys.contains(&key_upper.as_str()) {
-        anyhow::bail!("Invalid key name. Valid keys: {}", valid_keys.join(", "));
-    }
-
-    // Map aliases to actual key names
-    let key_mapped = match key_upper.as_str() {
-        "YOLO" => "SWITCH".to_string(),
-        _ => key_upper,
-    };
-
-    // Use the mapped key name for the config
-    let parsed = parse_key_binding(binding);
-    let config = serde_json::json!({ key_mapped: parsed });
-    let json_str = config.to_string();
-    info!("Sending keymap: {}", json_str);
-
-    send_to_device(KEYMAP_CONFIG_ID, json_str.as_bytes()).await
-}
-
-// Unescape common escape sequences in quoted strings
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars();
-
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
@@ -231,7 +297,6 @@ fn unescape_string(s: &str) -> String {
                 Some('\'') => result.push('\''),
                 Some('0') => result.push('\0'),
                 Some('x') => {
-                    // Handle \xNN hex escape
                     let hex1 = chars.next().unwrap_or('0');
                     let hex2 = chars.next().unwrap_or('0');
                     if let Some(byte) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16).ok() {
@@ -239,7 +304,6 @@ fn unescape_string(s: &str) -> String {
                     }
                 }
                 Some(other) => {
-                    // Unknown escape, keep as-is
                     result.push('\\');
                     result.push(other);
                 }
@@ -255,12 +319,10 @@ fn unescape_string(s: &str) -> String {
 fn parse_key_binding(input: &str) -> serde_json::Value {
     let trimmed = input.trim();
 
-    // Text macro: quoted string
     if (trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
     {
         let content = &trimmed[1..trimmed.len() - 1];
-        // Unescape common escape sequences
         let unescaped = unescape_string(content);
         return serde_json::json!({
             "type": "text",
@@ -269,68 +331,16 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Valid special key names (matching controller_zh.html)
     let valid_keys = [
-        // Basic navigation
-        "enter",
-        "return",
-        "space",
-        "tab",
-        "escape",
-        "esc",
-        "backspace",
-        "delete",
-        "insert",
-        "home",
-        "end",
-        "pageup",
-        "pagedown",
-        "up",
-        "down",
-        "left",
-        "right",
-        // Modifiers (can also be used as standalone keys)
-        "ctrl",
-        "shift",
-        "alt",
-        "option",
-        // System keys
-        "gui",
-        "win",
-        "meta",
-        "cmd",
-        "command",
-        // F-keys
-        "f1",
-        "f2",
-        "f3",
-        "f4",
-        "f5",
-        "f6",
-        "f7",
-        "f8",
-        "f9",
-        "f10",
-        "f11",
-        "f12",
-        // Symbols
-        "plus",
-        "minus",
-        "equal",
-        "semicolon",
-        "quote",
-        "backquote",
-        "backslash",
-        "comma",
-        "period",
-        "slash",
-        "bracketleft",
+        "enter", "return", "space", "tab", "escape", "esc", "backspace", "delete", "insert",
+        "home", "end", "pageup", "pagedown", "up", "down", "left", "right", "ctrl", "shift",
+        "alt", "option", "gui", "win", "meta", "cmd", "command", "f1", "f2", "f3", "f4", "f5",
+        "f6", "f7", "f8", "f9", "f10", "f11", "f12", "plus", "minus", "equal", "semicolon",
+        "quote", "backquote", "backslash", "comma", "period", "slash", "bracketleft",
         "bracketright",
     ];
-
     let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
 
-    // Check if input is a single uppercase letter (as combo)
     if trimmed.len() == 1
         && trimmed
             .chars()
@@ -345,7 +355,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Check if input is a single digit (as combo)
     if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
         return serde_json::json!({
             "type": "combo",
@@ -355,7 +364,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Check if input is a known key name
     let key_lower = trimmed.to_lowercase();
     if valid_keys.contains(&key_lower.as_str()) {
         return serde_json::json!({
@@ -366,11 +374,8 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Combo with + separator
     if trimmed.contains('+') {
         let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
-
-        // Check if all parts except last are valid modifiers
         let all_mods_valid = parts[..parts.len() - 1]
             .iter()
             .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
@@ -378,14 +383,9 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         if all_mods_valid {
             let last_part = parts.last().unwrap();
             let last_lower = last_part.to_lowercase();
-
-            // Check if last part is a valid key (known name OR alphanumeric)
             let is_valid_key = valid_keys.contains(&last_lower.as_str())
                 || (last_part.len() == 1
-                    && last_part
-                        .chars()
-                        .next()
-                        .map_or(false, |c| c.is_alphanumeric()));
+                    && last_part.chars().next().map_or(false, |c| c.is_alphanumeric()));
 
             if is_valid_key {
                 let modifiers: Vec<String> = parts[..parts.len() - 1]
@@ -406,7 +406,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         }
     }
 
-    // Default: text
     serde_json::json!({
         "type": "text",
         "value": trimmed,
@@ -414,64 +413,53 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     })
 }
 
-async fn find_peripheral(
-    peripherals: &[PlatformPeripheral],
-    target_service: Uuid,
-) -> anyhow::Result<Option<PlatformPeripheral>> {
-    for peripheral in peripherals {
-        let addr = peripheral.address();
-        if let Some(props) = peripheral.properties().await? {
-            let name = props.local_name.unwrap_or("(unknown)".to_string());
-            let rssi = props.rssi.unwrap_or(0);
-            info!("  {} - {} (RSSI: {})", addr, name, rssi);
+// ===== Main =====
 
-            for service in &props.services {
-                debug!("    Service UUID: {}", service);
+fn main() {
+    env_logger::init();
+    let cli = Cli::parse();
+    let port = get_port();
+
+    // Handle stop
+    if matches!(&cli.command, Some(Command::Stop)) {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            match http_request("GET", port, "/shutdown", None).await {
+                Some(_) => println!("Server stopped"),
+                None => eprintln!("Server not running"),
             }
+        });
+        return;
+    }
 
-            let has_target_service = props.services.iter().any(|s| *s == target_service);
-
-            if has_target_service {
-                info!("    >>> Found target service!");
-                return Ok(Some(peripheral.clone()));
+    // Check if server is already running
+    let should_start = {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        if rt.block_on(check_server(port)) {
+            if let Some(cmd) = &cli.command {
+                rt.block_on(forward_command(port, cmd));
+            } else {
+                println!("vibekeys server running on port {}", port);
             }
+            false
+        } else {
+            true
+        }
+    };
 
-            debug!("----------------------------");
+    if !should_start {
+        return;
+    }
+
+    // Daemonize (Unix only, must be before creating tokio runtime)
+    #[cfg(unix)]
+    {
+        if let Err(e) = do_daemonize() {
+            eprintln!("Failed to daemonize: {}", e);
+            std::process::exit(1);
         }
     }
 
-    Ok(None)
-}
-
-// Connect to device and discover services
-async fn connect_and_discover(peripheral: &PlatformPeripheral) -> anyhow::Result<()> {
-    let t = Instant::now();
-    peripheral.connect().await?;
-    info!("[{:.0?}] Connected", t.elapsed());
-
-    let t2 = Instant::now();
-    peripheral.discover_services().await?;
-    info!("[{:.0?}] Services discovered", t2.elapsed());
-
-    Ok(())
-}
-
-// Send message to characteristic
-async fn send_message(
-    peripheral: &PlatformPeripheral,
-    char_uuid: Uuid,
-    data: &[u8],
-) -> anyhow::Result<()> {
-    let characteristics = peripheral.characteristics();
-
-    for char in &characteristics {
-        if char.uuid == char_uuid {
-            peripheral
-                .write(char, data, WriteType::WithResponse)
-                .await?;
-            return Ok(());
-        }
-    }
-
-    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(run_server(port));
 }
