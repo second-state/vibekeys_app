@@ -14,16 +14,15 @@ use tokio::sync::{Mutex, oneshot};
 const APP_NAME: &str = "vibekeys";
 const DEFAULT_PORT: u16 = 42837;
 
-// TODO: uncomment when bluetooth is available
-// use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
-// use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
-// use uuid::Uuid;
-// use tokio::sync::mpsc;
-// use anyhow;
-//
-// const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
-// const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
-// const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
+use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
+use uuid::Uuid;
+use tokio::sync::mpsc;
+use anyhow;
+
+const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
+const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
+const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
 
 // ===== CLI =====
 
@@ -130,10 +129,144 @@ fn do_daemonize() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+// ===== BLE Functions =====
+
+async fn get_adapter() -> anyhow::Result<(Manager, Adapter)> {
+    let manager = Manager::new().await?;
+    let adapters = manager.adapters().await?;
+    let adapter = adapters
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("No Bluetooth adapter"))?;
+    Ok((manager, adapter))
+}
+
+async fn scan_and_find_peripheral(adapter: &Adapter) -> anyhow::Result<PlatformPeripheral> {
+    let mut filter = ScanFilter::default();
+    filter.services.push(CONTROLLER_SERVICE_ID);
+    adapter.start_scan(filter.clone()).await?;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let peripherals = adapter.peripherals().await?;
+        if !peripherals.is_empty() {
+            adapter.stop_scan().await?;
+            if let Some(p) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
+                return Ok(p);
+            }
+            adapter.start_scan(filter.clone()).await?;
+        }
+    }
+    adapter.stop_scan().await?;
+    anyhow::bail!("Device scan timeout")
+}
+
+async fn find_peripheral(
+    peripherals: &[PlatformPeripheral],
+    target_service: Uuid,
+) -> anyhow::Result<Option<PlatformPeripheral>> {
+    for p in peripherals {
+        if let Some(props) = p.properties().await? {
+            if props.services.iter().any(|s| *s == target_service) {
+                return Ok(Some(p.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+async fn connect_and_discover(p: &PlatformPeripheral) -> anyhow::Result<()> {
+    p.connect().await?;
+    p.discover_services().await?;
+    Ok(())
+}
+
+async fn send_ble(p: &PlatformPeripheral, char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
+    for c in &p.characteristics() {
+        if c.uuid == char_uuid {
+            p.write(c, data, WriteType::WithResponse).await?;
+            return Ok(());
+        }
+    }
+    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
+}
+
+enum BleCmd {
+    Send {
+        char_uuid: Uuid,
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
+    let mut peripheral: Option<PlatformPeripheral> = None;
+    loop {
+        let need_connect = match &peripheral {
+            None => true,
+            Some(p) => !p.is_connected().await.unwrap_or(false),
+        };
+        if need_connect {
+            log_message("Scanning for BLE device...");
+            match try_ble_connect().await {
+                Ok(p) => {
+                    log_message("BLE device connected");
+                    peripheral = Some(p);
+                }
+                Err(e) => {
+                    log_message(&format!("BLE scan failed: {}, retrying in 5s", e));
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    continue;
+                }
+            }
+        }
+        if let Some(ref p) = peripheral {
+            tokio::select! {
+                cmd = rx.recv() => {
+                    match cmd {
+                        Some(BleCmd::Send { char_uuid, data, reply }) => {
+                            let result = send_ble(p, char_uuid, &data).await;
+                            let _ = reply.send(result.map_err(|e| e.to_string()));
+                        }
+                        None => return,
+                    }
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(30)) => {}
+            }
+        }
+    }
+}
+
+async fn try_ble_connect() -> anyhow::Result<PlatformPeripheral> {
+    let (_manager, adapter) = get_adapter().await?;
+    let p = scan_and_find_peripheral(&adapter).await?;
+    connect_and_discover(&p).await?;
+    Ok(p)
+}
+
+async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -> String {
+    let (tx, rx) = oneshot::channel();
+    if ble_tx
+        .send(BleCmd::Send {
+            char_uuid,
+            data: data.to_vec(),
+            reply: tx,
+        })
+        .await
+        .is_err()
+    {
+        return "error: BLE not available\n".to_string();
+    }
+    match rx.await {
+        Ok(Ok(())) => "ok\n".to_string(),
+        Ok(Err(e)) => format!("error: {}\n", e),
+        Err(_) => "error: no response\n".to_string(),
+    }
+}
+
 // ===== Axum HTTP Server =====
 
 struct AppState {
-    // ble_tx: mpsc::Sender<BleCmd>,  // TODO: uncomment
+    ble_tx: mpsc::Sender<BleCmd>,
     counter: AtomicU64,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
@@ -158,23 +291,25 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
 
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     state.counter.fetch_add(1, Ordering::Relaxed);
-    log_message(&format!("send: {}", body));
-    "ok\n".to_string()
+    ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await
 }
 
 async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     state.counter.fetch_add(1, Ordering::Relaxed);
-    log_message(&format!("keymap: {}", body));
-    "ok\n".to_string()
+    ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await
 }
 
 async fn run_server(port: u16) {
+    let (ble_tx, ble_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
     let state = Arc::new(AppState {
+        ble_tx,
         counter: AtomicU64::new(0),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
     });
+
+    tokio::spawn(ble_task(ble_rx));
 
     let app = Router::new()
         .route("/", get(root_handler))
