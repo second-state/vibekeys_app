@@ -49,6 +49,18 @@ cargo build --release
 
 ## Commands
 
+### Server Mode
+
+VibeKeys runs as a background daemon server:
+
+```bash
+# Start the server (runs in background, first command starts it)
+vibekeys
+
+# Stop the server
+vibekeys stop
+```
+
 ### Send text to keyboard display
 
 Display a text message on the VibeKeys MAX screen:
@@ -68,6 +80,18 @@ vibekeys keymap <KEY> <BINDING>
 ```
 
 Each call configures one key. The device merges it into the existing keymap.
+
+### Hook Mode (for Claude Code / Codex integration)
+
+Reads hook JSON events from stdin and forwards to the keyboard display:
+
+```bash
+# For Claude Code (alias: hook)
+vibekeys claude
+
+# For Codex
+vibekeys codex
+```
 
 ## Supported Keys
 
