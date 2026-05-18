@@ -89,16 +89,17 @@ fn log_message(msg: &str) {
 
 // ===== HTTP Client =====
 
-async fn check_server(port: u16) -> bool {
+fn check_server(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
-    let client = reqwest::Client::builder()
+
+    let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(1))
         .no_proxy()
         .build();
 
     if let Ok(client) = client {
-        if let Ok(resp) = client.get(&url).send().await {
-            if let Ok(text) = resp.text().await {
+        if let Ok(resp) = client.get(&url).send() {
+            if let Ok(text) = resp.text() {
                 return text.trim() == "ok";
             }
         }
@@ -335,9 +336,15 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
     result
 }
 
-async fn run_server(port: u16) {
+async fn run_server(port: u16, initial_cmd: Option<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    if let Some(ble_cmd) = initial_cmd.map(command_to_blecmd).flatten() {
+        if ble_tx.send(ble_cmd).await.is_err() {
+            log_message("Failed to send initial command to BLE task");
+        }
+    }
 
     let state = Arc::new(AppState {
         ble_tx,
@@ -411,6 +418,53 @@ async fn send_keymap(port: u16, config: &str) {
         }
     } else {
         eprintln!("Failed to connect to server");
+    }
+}
+
+fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
+    match cmd {
+        Command::Start | Command::Stop => None,
+        Command::Send { message } => {
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: KEYBOARD_DISPLAY_ID,
+                data: message.into_bytes(),
+                reply: tx,
+            })
+        }
+        Command::Keymap { key, binding } => {
+            let config = build_keymap_config(&key, &binding);
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: KEYMAP_CONFIG_ID,
+                data: config.into_bytes(),
+                reply: tx,
+            })
+        }
+        Command::Claude | Command::Hook => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            format_claude_message(&input).map(|msg| {
+                let (tx, _) = oneshot::channel();
+                BleCmd::Send {
+                    char_uuid: KEYBOARD_DISPLAY_ID,
+                    data: msg.into_bytes(),
+                    reply: tx,
+                }
+            })
+        }
+        Command::Codex => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            format_codex_message(&input).map(|msg| {
+                let (tx, _) = oneshot::channel();
+                BleCmd::Send {
+                    char_uuid: KEYBOARD_DISPLAY_ID,
+                    data: msg.into_bytes(),
+                    reply: tx,
+                }
+            })
+        }
     }
 }
 
@@ -743,16 +797,10 @@ fn main() {
 
     // Handle start
     if matches!(cli.command, Command::Start) {
-        // Check if already running
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        if rt.block_on(check_server(port)) {
+        if check_server(port) {
             println!("vibekeys server already running on port {}", port);
             return;
         }
-        drop(rt);
 
         // Daemonize (Unix only, must be before creating tokio runtime)
         #[cfg(unix)]
@@ -767,44 +815,34 @@ fn main() {
             .enable_all()
             .build()
             .unwrap();
-        rt.block_on(run_server(port));
+        rt.block_on(run_server(port, None));
         return;
     }
 
     // Other commands: check if server is already running, if not start it
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    let server_running = rt.block_on(check_server(port));
+
+    let server_running = check_server(port);
 
     if server_running {
-        rt.block_on(forward_command(port, &cli.command));
-        return;
-    }
-
-    // Server not running, need to start it
-    drop(rt);
-
-    // Spawn child process to run server, then wait for it to be ready
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .arg("start")
-        .spawn()
-        .expect("Failed to start server");
-
-    // Wait for server to be ready (poll health endpoint)
-    for _ in 0..30 {
-        std::thread::sleep(std::time::Duration::from_millis(100));
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        if rt.block_on(check_server(port)) {
-            rt.block_on(forward_command(port, &cli.command));
-            break;
+        rt.block_on(forward_command(port, &cli.command));
+        return;
+    }
+
+    #[cfg(unix)]
+    {
+        if let Err(e) = do_daemonize() {
+            eprintln!("Failed to daemonize: {}", e);
+            std::process::exit(1);
         }
     }
 
-    // Ensure child is still running (don't wait for it, it's a daemon)
-    let _ = child.try_wait();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(run_server(port, Some(cli.command)));
 }
