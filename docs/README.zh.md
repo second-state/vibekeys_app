@@ -218,6 +218,46 @@ vibekeys hook
 }
 ```
 
+## ASR 配置
+
+配置 ASR（自动语音识别）服务用于语音功能：
+
+```bash
+# 交互式配置 - 提示选择平台和输入 API Key
+vibekeys setup
+
+# 直接配置（带参数）
+vibekeys setup --platform <平台> --api-key <密钥>
+
+# 简写形式
+vibekeys setup -p <平台> --api-key <密钥>
+```
+
+### 支持的平台
+
+| 平台 | 说明 | 模型 |
+|------|------|------|
+| `OpenAI` | OpenAI Whisper | `whisper-1` |
+| `ByteFuture` | ByteFuture Groq Whisper | `groq/whisper-large-v3` |
+| `Groq` | Groq Whisper（速度快，有免费额度） | `whisper-large-v3-turbo` |
+| `GLM` | GLM（智谱）ASR | `glm-asr-2512` |
+| `Custom` | 自定义 ASR 端点 | - |
+
+配置保存在 `~/.vibekeys/config.toml`。
+
+### 使用示例
+
+```bash
+# 配置 Groq（速度快，通常有免费额度）
+vibekeys setup --platform Groq --api-key gsk_xxxx
+
+# 配置 OpenAI
+vibekeys setup -p OpenAI --api-key sk-xxxx
+
+# 交互式模式 - 会提示选择平台和输入 API Key
+vibekeys setup
+```
+
 ## 开发
 
 ```bash

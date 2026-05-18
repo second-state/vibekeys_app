@@ -236,6 +236,46 @@ Add to `.claude/settings.json`:
 }
 ```
 
+## ASR Configuration
+
+Configure the ASR (Automatic Speech Recognition) service for voice features:
+
+```bash
+# Interactive setup - prompts for platform and API key
+vibekeys setup
+
+# Direct configuration with parameters
+vibekeys setup --platform <PLATFORM> --api-key <KEY>
+
+# Short form
+vibekeys setup -p <PLATFORM> --api-key <KEY>
+```
+
+### Supported Platforms
+
+| Platform | Description | Model |
+|----------|-------------|-------|
+| `OpenAI` | OpenAI Whisper | `whisper-1` |
+| `ByteFuture` | ByteFuture Groq Whisper | `groq/whisper-large-v3` |
+| `Groq` | Groq Whisper (fast, free tier available) | `whisper-large-v3-turbo` |
+| `GLM` | GLM (智谱) ASR | `glm-asr-2512` |
+| `Custom` | Custom ASR endpoint | - |
+
+Configuration is saved to `~/.vibekeys/config.toml`.
+
+### Examples
+
+```bash
+# Configure Groq (fast, often has free tier)
+vibekeys setup --platform Groq --api-key gsk_xxxx
+
+# Configure OpenAI
+vibekeys setup -p OpenAI --api-key sk-xxxx
+
+# Interactive mode - will prompt for platform and API key
+vibekeys setup
+```
+
 ## Development
 
 ```bash

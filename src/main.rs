@@ -19,6 +19,10 @@ use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+mod asr;
+mod config;
+mod util;
+
 const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
@@ -48,6 +52,15 @@ enum Command {
     Codex,
     /// Stop the running server
     Stop,
+    /// Setup ASR configuration
+    Setup {
+        /// ASR provider (OpenAI, ByteFuture, Groq, GLM, Custom)
+        #[arg(short, long)]
+        platform: Option<String>,
+        /// API key for the ASR service
+        #[arg(long)]
+        api_key: Option<String>,
+    },
 }
 
 // ===== Port =====
@@ -423,7 +436,7 @@ async fn send_keymap(port: u16, config: &str) {
 
 fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
     match cmd {
-        Command::Start | Command::Stop => None,
+        Command::Start | Command::Stop | Command::Setup { .. } => None,
         Command::Send { message } => {
             let (tx, _) = oneshot::channel();
             Some(BleCmd::Send {
@@ -470,7 +483,7 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
 
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
-        Command::Start | Command::Stop => unreachable!(),
+        Command::Start | Command::Stop | Command::Setup { .. } => unreachable!(),
         Command::Send { message } => {
             send_command(port, message).await;
         }
@@ -769,6 +782,15 @@ fn main() {
     env_logger::init();
     let cli = Cli::parse();
     let port = get_port();
+
+    // Handle setup
+    if let Command::Setup { platform, api_key } = &cli.command {
+        if let Err(e) = config::run_setup(platform.clone(), api_key.clone()) {
+            eprintln!("Setup failed: {}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Handle stop
     if matches!(cli.command, Command::Stop) {
