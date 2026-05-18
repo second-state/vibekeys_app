@@ -89,39 +89,21 @@ fn log_message(msg: &str) {
 
 // ===== HTTP Client =====
 
-async fn http_request(method: &str, port: u16, path: &str, body: Option<&[u8]>) -> Option<String> {
-    // Disable proxy for localhost
-    let url = reqwest::Url::parse(&format!("http://127.0.0.1:{}{}", port, path)).ok()?;
-
+async fn check_server(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", port);
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(1))
         .no_proxy()
-        .build()
-        .ok()?;
+        .build();
 
-    let req = match method {
-        "GET" => client.get(url),
-        "POST" => {
-            if let Some(b) = body {
-                client.post(url).body(b.to_vec())
-            } else {
-                client.post(url)
+    if let Ok(client) = client {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(text) = resp.text().await {
+                return text.trim() == "ok";
             }
         }
-        _ => return None,
-    };
-
-    match req.send().await {
-        Ok(resp) => resp.text().await.ok(),
-        Err(_) => None,
     }
-}
-
-async fn check_server(port: u16) -> bool {
-    http_request("GET", port, "/health", None)
-        .await
-        .map(|s| s.trim() == "ok")
-        .unwrap_or(false)
+    false
 }
 
 // ===== Daemon (Unix) =====
@@ -390,34 +372,70 @@ async fn run_server(port: u16) {
 
 // ===== Command Forwarding =====
 
+async fn send_command(port: u16, message: &str) {
+    let url = format!("http://127.0.0.1:{}/send", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(message.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
+async fn send_keymap(port: u16, config: &str) {
+    let url = format!("http://127.0.0.1:{}/keymap", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
         Command::Start | Command::Stop => unreachable!(),
         Command::Send { message } => {
-            match http_request("POST", port, "/send", Some(message.as_bytes())).await {
-                Some(r) => print!("{}", r),
-                None => eprintln!("Failed to connect to server"),
-            }
+            send_command(port, message).await;
         }
         Command::Keymap { key, binding } => {
             let config = build_keymap_config(key, binding);
-            match http_request("POST", port, "/keymap", Some(config.as_bytes())).await {
-                Some(r) => print!("{}", r),
-                None => eprintln!("Failed to connect to server"),
-            }
+            send_keymap(port, &config).await;
         }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             if let Some(msg) = format_claude_message(&input) {
-                http_request("POST", port, "/send", Some(msg.as_bytes())).await;
+                send_command(port, &msg).await;
             }
         }
         Command::Codex => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             if let Some(msg) = format_codex_message(&input) {
-                http_request("POST", port, "/send", Some(msg.as_bytes())).await;
+                send_command(port, &msg).await;
             }
         }
     }
@@ -705,9 +723,19 @@ fn main() {
             .build()
             .unwrap();
         rt.block_on(async {
-            match http_request("GET", port, "/shutdown", None).await {
-                Some(_) => println!("Server stopped"),
-                None => eprintln!("Server not running"),
+            let url = format!("http://127.0.0.1:{}/shutdown", port);
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .no_proxy()
+                .build();
+
+            if let Ok(client) = client {
+                match client.get(&url).send().await {
+                    Ok(_) => println!("Server stopped"),
+                    Err(_) => eprintln!("Server not running"),
+                }
+            } else {
+                eprintln!("Server not running");
             }
         });
         return;
