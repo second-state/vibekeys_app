@@ -55,6 +55,9 @@ enum Command {
     Stop,
     /// Configure ASR settings
     AsrConfig {
+        /// Clear ASR configuration (send empty string)
+        #[arg(long)]
+        clean: bool,
         /// Platform (e.g., whisper) - omit for interactive mode
         platform: Option<String>,
         /// API URI
@@ -565,10 +568,10 @@ async fn send_asr_config(port: u16, config: &str) {
                     print!("{}", text);
                 }
             }
-            Err(_) => eprintln!("Failed to connect to server"),
+            Err(e) => log::error!("Failed to connect to server: {}", e),
         }
     } else {
-        eprintln!("Failed to connect to server");
+        log::error!("Failed to connect to server");
     }
 }
 
@@ -619,12 +622,20 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
             })
         }
         Command::AsrConfig {
+            clean,
             platform,
             uri,
             api_key,
             model,
         } => {
-            if let Some(plat) = platform {
+            if clean {
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYMAP_ASR_CONFIG_ID,
+                    data: vec![],
+                    reply: tx,
+                })
+            } else if let Some(plat) = platform {
                 let config =
                     build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
                 let (tx, _) = oneshot::channel();
@@ -691,6 +702,16 @@ async fn forward_command(port: u16, cmd: &Command) {
             send_keymap(port, &config).await;
         }
         Command::AsrConfig {
+            clean: true,
+            platform: _,
+            uri: _,
+            api_key: _,
+            model: _,
+        } => {
+            send_asr_config(port, "").await;
+        }
+        Command::AsrConfig {
+            clean: false,
             platform,
             uri,
             api_key,
@@ -1200,7 +1221,7 @@ async fn main() {
     }
 
     // Handle interactive ASR config
-    if matches!(cli.command, Command::AsrConfig { platform: None, .. }) {
+    if matches!(cli.command, Command::AsrConfig { platform: None, clean: false, .. }) {
         match interactive_asr_config() {
             Ok((platform, uri, api_key, model)) => {
                 let config = build_asr_config(
@@ -1215,6 +1236,7 @@ async fn main() {
                     run_server(
                         port,
                         Some(Command::AsrConfig {
+                            clean: false,
                             platform: Some(platform),
                             uri,
                             api_key,
