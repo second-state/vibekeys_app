@@ -204,7 +204,7 @@ async fn write_asr_acknowledge(
     #[cfg(not(target_os = "macos"))]
     const PASTE_CODE: u8 = 1;
     #[cfg(target_os = "macos")]
-    const PASTE_CODE: u8 = 1;
+    const PASTE_CODE: u8 = 2;
 
     if let Err(e) = peripheral
         .write(asr_char, &[PASTE_CODE], WriteType::WithResponse)
