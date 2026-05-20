@@ -1,18 +1,37 @@
-use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
-use btleplug::platform::Adapter;
-use btleplug::platform::Manager;
-use btleplug::platform::Peripheral as PlatformPeripheral;
+use arboard::Clipboard;
+
+use axum::{
+    extract::State,
+    routing::{get, post},
+    Router,
+};
 use clap::{Parser, Subcommand};
-use log::{debug, info};
+use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use std::io::{self, Read};
-use std::time::{Duration, Instant};
-use tokio::time;
+use std::sync::Arc;
+use tokio::sync::{oneshot, Mutex};
+
+const DEFAULT_PORT: u16 = 42837;
+
+use anyhow;
+use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
+use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
+use futures::StreamExt;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
-/// BLE Controller CLI
+const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
+const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
+const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
+const KEYMAP_ASR_CONFIG_ID: Uuid = Uuid::from_u128(0xfaf9e22c_e8fc_421b_afef_8b5236813fb1);
+const WIFI_SSID_ID: Uuid = Uuid::from_u128(0x1fda4d6e_2f14_42b0_96fa_453bed238375);
+const WIFI_PASS_ID: Uuid = Uuid::from_u128(0xa987ab18_a940_421a_a1d7_b94ee22bccbe);
+
+// ===== CLI =====
+
 #[derive(Parser, Debug)]
-#[command(name = "vibekeys")]
-#[command(version, long_about = None)]
+#[command(name = "vibekeys", version, long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -20,117 +39,857 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Start the vibekeys server (runs in background)
+    Start,
     /// Send a message to the connected device
-    Send {
-        /// Message to send
-        message: String,
-    },
-    /// Configure key mapping (merged, can be done one key at a time)
-    Keymap {
-        /// Key name (MIC, CUSTOM, ESC, NEXT, BACKSPACE, SWITCH, ACCEPT, ROTATE)
-        key: String,
-        /// Key binding (e.g., "A", "Ctrl+C", Alt+Tab", "\"text\"")
-        binding: String,
-    },
+    Send { message: String },
+    /// Configure key mapping
+    Keymap { key: String, binding: String },
     /// Read Claude Code hook JSON from stdin and forward to device
+    Claude,
+    /// Alias for 'claude' - reads Claude Code hook JSON from stdin and forwards to device
     Hook,
+    /// Read Codex hook JSON from stdin and forward to device
+    Codex,
+    /// Stop the running server
+    Stop,
+    /// Configure ASR settings
+    AsrConfig {
+        /// Clear ASR configuration (send empty string)
+        #[arg(long)]
+        clean: bool,
+        /// Platform (e.g., whisper) - omit for interactive mode
+        platform: Option<String>,
+        /// API URI
+        #[arg(long)]
+        uri: Option<String>,
+        /// API key
+        #[arg(long)]
+        api_key: Option<String>,
+        /// Model name
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Configure WiFi settings
+    WifiConfig {
+        /// WiFi SSID - omit for interactive mode
+        ssid: Option<String>,
+        /// WiFi password
+        #[arg(long)]
+        pass: Option<String>,
+    },
 }
 
-// Controller Service UUID
-const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
+// ===== Port =====
 
-// Keyboard Display Characteristic UUID
-const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
+fn get_port() -> u16 {
+    std::env::var("VIBEKEYS_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_PORT)
+}
 
-// Keymap Config Characteristic UUID
-const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+// ===== HTTP Client =====
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+async fn check_server(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{}/health", port);
 
-    let cli = Cli::parse();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(1))
+        .no_proxy()
+        .build();
 
-    match cli.command {
-        Command::Send { message } => {
-            send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes()).await?;
-            Ok(())
+    if let Ok(client) = client {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(text) = resp.text().await {
+                return text.trim() == "ok";
+            }
         }
-        Command::Keymap { key, binding } => {
-            send_keymap(&key, &binding).await?;
-            Ok(())
-        }
-        Command::Hook => handle_hook().await,
     }
+    false
 }
 
-// Get Bluetooth adapter
+// ===== BLE Functions =====
+
 async fn get_adapter() -> anyhow::Result<(Manager, Adapter)> {
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
     let adapter = adapters
         .into_iter()
         .next()
-        .expect("No Bluetooth adapter found");
+        .ok_or_else(|| anyhow::anyhow!("No Bluetooth adapter"))?;
     Ok((manager, adapter))
 }
 
-// Scan and find the target peripheral with timeout (20 * 100ms = 2s)
 async fn scan_and_find_peripheral(adapter: &Adapter) -> anyhow::Result<PlatformPeripheral> {
     let mut filter = ScanFilter::default();
     filter.services.push(CONTROLLER_SERVICE_ID);
-
     adapter.start_scan(filter.clone()).await?;
-
     for _ in 0..20 {
-        time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let peripherals = adapter.peripherals().await?;
-
         if !peripherals.is_empty() {
             adapter.stop_scan().await?;
-            if let Some(target) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
-                return Ok(target);
+            if let Some(p) = find_peripheral(&peripherals, CONTROLLER_SERVICE_ID).await? {
+                return Ok(p);
             }
-            // Restart scan if we found devices but not our target
             adapter.start_scan(filter.clone()).await?;
         }
     }
-
     adapter.stop_scan().await?;
-    anyhow::bail!("Device scan timeout (2s)")
+    anyhow::bail!("Device scan timeout")
 }
 
-// Send data to device (keeps manager alive)
-async fn send_to_device(char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
-    let t0 = Instant::now();
+async fn find_peripheral(
+    peripherals: &[PlatformPeripheral],
+    target_service: Uuid,
+) -> anyhow::Result<Option<PlatformPeripheral>> {
+    for p in peripherals {
+        if let Some(props) = p.properties().await? {
+            if props.services.iter().any(|s| *s == target_service) {
+                return Ok(Some(p.clone()));
+            }
+        }
+    }
+    Ok(None)
+}
 
-    let (_manager, adapter) = get_adapter().await?;
-    info!("[{:.0?}] Adapter ready", t0.elapsed());
-
-    let peripheral = scan_and_find_peripheral(&adapter).await?;
-    connect_and_discover(&peripheral).await?;
-    info!("[{:.0?}] Connected & discovered", t0.elapsed());
-
-    send_message(&peripheral, char_uuid, data).await?;
-    info!("[{:.0?}] Data sent", t0.elapsed());
-
-    info!("[{:.0?}] Total", t0.elapsed());
-
+async fn connect_and_discover(p: &PlatformPeripheral) -> anyhow::Result<()> {
+    p.connect().await?;
+    p.discover_services().await?;
+    // Subscribe to ASR result characteristic notifications
+    for c in p.characteristics() {
+        if c.uuid == KEYMAP_ASR_RESULT_ID {
+            p.subscribe(&c).await?;
+            log::info!("Subscribed to ASR result notifications");
+            break;
+        }
+    }
     Ok(())
 }
 
-// Handle Claude Code hook input from stdin
-async fn handle_hook() -> anyhow::Result<()> {
-    let mut input = String::new();
-    io::stdin().read_to_string(&mut input).ok();
+async fn send_ble(p: &PlatformPeripheral, char_uuid: Uuid, data: &[u8]) -> anyhow::Result<()> {
+    for c in &p.characteristics() {
+        if c.uuid == char_uuid {
+            p.write(c, data, WriteType::WithResponse).await?;
+            return Ok(());
+        }
+    }
+    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
+}
 
-    let hook: serde_json::Value = match serde_json::from_str(&input) {
-        Ok(v) => v,
-        Err(_) => return Ok(()),
+enum BleCmd {
+    Send {
+        char_uuid: Uuid,
+        data: Vec<u8>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// Write acknowledge (1u8) to ASR result characteristic
+async fn write_asr_acknowledge(
+    peripheral: &PlatformPeripheral,
+    asr_char: &btleplug::api::Characteristic,
+) {
+    #[cfg(not(target_os = "macos"))]
+    const PASTE_CODE: u8 = 1;
+    #[cfg(target_os = "macos")]
+    const PASTE_CODE: u8 = 2;
+
+    if let Err(e) = peripheral
+        .write(asr_char, &[PASTE_CODE], WriteType::WithResponse)
+        .await
+    {
+        log::error!("Failed to write ASR acknowledge: {}", e);
+    } else {
+        log::info!("ASR acknowledge sent");
+    }
+}
+
+/// Set text to clipboard
+fn set_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = Clipboard::new() {
+        if let Err(e) = clipboard.set_text(text) {
+            log::error!("Failed to set clipboard: {}", e);
+        } else {
+            log::info!("Text set to clipboard: {}", text);
+        }
+    } else {
+        log::error!("Failed to access clipboard");
+    }
+}
+
+/// Handle ASR result notifications: set to clipboard and acknowledge with 1u8
+async fn handle_asr_notifications(
+    peripheral: &PlatformPeripheral,
+) -> Option<(btleplug::api::Characteristic, String)> {
+    log::info!("ASR notification handler started");
+
+    // Find the ASR result characteristic
+    let asr_char = peripheral
+        .characteristics()
+        .iter()
+        .find(|c| c.uuid == KEYMAP_ASR_RESULT_ID)
+        .cloned()?;
+
+    let mut notify_stream = peripheral.notifications().await.ok()?;
+
+    // Listen for notifications, filtering by ASR characteristic UUID
+    while let Some(notification) = notify_stream.next().await {
+        // Only process notifications from ASR result characteristic
+        if notification.uuid != KEYMAP_ASR_RESULT_ID {
+            continue;
+        }
+
+        let data = notification.value;
+        if !data.is_empty() {
+            // Extract string from notification data
+            let text = String::from_utf8_lossy(&data).to_string();
+            return Some((asr_char, text));
+        }
+    }
+
+    None
+}
+
+enum SelectResult {
+    BleCmd(BleCmd),
+    AsrResult(btleplug::api::Characteristic, String),
+}
+
+async fn select_rx_and_notify(
+    rx: &mut mpsc::Receiver<BleCmd>,
+    peripheral: &PlatformPeripheral,
+) -> Option<SelectResult> {
+    tokio::select! {
+        cmd = rx.recv() => {
+            cmd.map(|c| SelectResult::BleCmd(c))
+        }
+        asr_result = handle_asr_notifications(peripheral) => {
+            asr_result.map(|res| SelectResult::AsrResult(res.0, res.1))
+        }
+    }
+}
+
+async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
+    let mut peripheral: Option<PlatformPeripheral> = None;
+    let mut first_connect_deadline =
+        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
+    loop {
+        let need_connect = match &peripheral {
+            None => true,
+            Some(p) => !p.is_connected().await.unwrap_or(false),
+        };
+        if need_connect {
+            log::info!("Scanning for BLE device...");
+            match try_ble_connect().await {
+                Ok(p) => {
+                    log::info!("BLE device connected");
+                    peripheral = Some(p);
+                    first_connect_deadline = None; // Connected, clear deadline
+                }
+                Err(e) => {
+                    // If we were connected before and lost connection, exit
+                    if peripheral.is_some() {
+                        log::error!("BLE disconnected: {}", e);
+                        return;
+                    }
+                    // First connection attempt - check deadline
+                    if let Some(deadline) = first_connect_deadline {
+                        if tokio::time::Instant::now() > deadline {
+                            log::warn!("First connection timeout, exiting");
+                            return;
+                        }
+                        log::warn!("BLE scan failed: {}, retrying", e);
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    } else {
+                        // Should not happen
+                        return;
+                    }
+                }
+            }
+        }
+        if let Some(ref p) = peripheral {
+            match select_rx_and_notify(&mut rx, p).await {
+                Some(SelectResult::BleCmd(BleCmd::Send {
+                    char_uuid,
+                    data,
+                    reply,
+                })) => {
+                    // Check connection before sending with 1s timeout
+                    log::info!("check connect status");
+                    let connected =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false);
+
+                    if !connected {
+                        log::error!("BLE disconnected before send, exiting");
+                        let _ = reply.send(Err("BLE disconnected".to_string()));
+                        return;
+                    }
+
+                    log::info!("start send");
+                    let result = send_ble(p, char_uuid, &data).await;
+                    log::info!("send end");
+                    let _ = reply.send(result.map_err(|e| e.to_string()));
+                }
+                Some(SelectResult::AsrResult(asr_char, text)) => {
+                    log::info!("ASR result received: {}", text);
+                    set_to_clipboard(&text);
+                    write_asr_acknowledge(p, &asr_char).await;
+                }
+                None => return,
+            }
+        }
+    }
+}
+
+async fn try_ble_connect() -> anyhow::Result<PlatformPeripheral> {
+    let (_manager, adapter) = get_adapter().await?;
+    let p = scan_and_find_peripheral(&adapter).await?;
+    connect_and_discover(&p).await?;
+    Ok(p)
+}
+
+async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -> String {
+    let (tx, rx) = oneshot::channel();
+    if ble_tx
+        .send(BleCmd::Send {
+            char_uuid,
+            data: data.to_vec(),
+            reply: tx,
+        })
+        .await
+        .is_err()
+    {
+        return "error: BLE not available\n".to_string();
+    }
+    match rx.await {
+        Ok(Ok(())) => "ok\n".to_string(),
+        Ok(Err(e)) => format!("error: {}\n", e),
+        Err(_) => "error: no response\n".to_string(),
+    }
+}
+
+// ===== Axum HTTP Server =====
+
+struct AppState {
+    ble_tx: mpsc::Sender<BleCmd>,
+    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+async fn health_handler() -> &'static str {
+    "ok"
+}
+
+async fn root_handler(State(_): State<Arc<AppState>>) -> String {
+    format!("vibekeys server running")
+}
+
+async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
+    log::info!("Shutdown requested");
+    let tx = state.shutdown_tx.lock().await.take();
+    if let Some(tx) = tx {
+        let _ = tx.send(());
+    }
+    "shutting down\n".to_string()
+}
+
+async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log::error!("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
+}
+
+async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log::error!("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
+}
+
+async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let result = ble_send(&state.ble_tx, KEYMAP_ASR_CONFIG_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log::error!("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
+}
+
+async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    // Parse JSON with ssid and pass
+    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&body) {
+        let ssid = config["ssid"].as_str();
+        let pass = config["pass"].as_str();
+
+        let mut results = Vec::new();
+
+        // Send SSID first
+        if let Some(s) = ssid {
+            results.push(ble_send(&state.ble_tx, WIFI_SSID_ID, s.as_bytes()).await);
+        }
+
+        // Then send password
+        if let Some(p) = pass {
+            results.push(ble_send(&state.ble_tx, WIFI_PASS_ID, p.as_bytes()).await);
+        }
+
+        // If BLE disconnected, shut down the server
+        if results.iter().any(|r| r.contains("disconnected")) {
+            log::error!("BLE disconnected, shutting down server");
+            let tx = state.shutdown_tx.lock().await.take();
+            if let Some(tx) = tx {
+                let _ = tx.send(());
+            }
+        }
+
+        results.join("\n")
+    } else {
+        "error: invalid JSON format, expected {\"ssid\": \"...\", \"pass\": \"...\"}\n".to_string()
+    }
+}
+
+async fn run_server(port: u16, initial_cmd: Option<Command>) {
+    let (ble_tx, ble_rx) = mpsc::channel(16);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+
+    if let Some(ble_cmd) = initial_cmd.map(command_to_blecmd).flatten() {
+        if ble_tx.send(ble_cmd).await.is_err() {
+            log::error!("Failed to send initial command to BLE task");
+        }
+    }
+
+    let state = Arc::new(AppState {
+        ble_tx,
+        shutdown_tx: Mutex::new(Some(shutdown_tx)),
+    });
+
+    tokio::spawn(ble_task(ble_rx));
+
+    let app = Router::new()
+        .route("/", get(root_handler))
+        .route("/health", get(health_handler))
+        .route("/shutdown", get(shutdown_handler))
+        .route("/send", post(send_handler))
+        .route("/keymap", post(keymap_handler))
+        .route("/asr-config", post(asr_config_handler))
+        .route("/wifi-config", post(wifi_config_handler))
+        .with_state(state);
+
+    let addr = format!("127.0.0.1:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    log::info!("Listening on {}", addr);
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+
+    log::info!("Server stopped");
+}
+
+// ===== Command Forwarding =====
+
+async fn send_command(port: u16, message: &str) {
+    let url = format!("http://127.0.0.1:{}/send", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(message.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
+async fn send_keymap(port: u16, config: &str) {
+    let url = format!("http://127.0.0.1:{}/keymap", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
+async fn send_asr_config(port: u16, config: &str) {
+    let url = format!("http://127.0.0.1:{}/asr-config", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(e) => log::error!("Failed to connect to server: {}", e),
+        }
+    } else {
+        log::error!("Failed to connect to server");
+    }
+}
+
+async fn send_wifi_config(port: u16, ssid: &str, pass: Option<&str>) {
+    let url = format!("http://127.0.0.1:{}/wifi-config", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    let config = serde_json::json!({
+        "ssid": ssid,
+        "pass": pass,
+    });
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
+fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
+    match cmd {
+        Command::Start | Command::Stop => None,
+        Command::Send { message } => {
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: KEYBOARD_DISPLAY_ID,
+                data: message.into_bytes(),
+                reply: tx,
+            })
+        }
+        Command::Keymap { key, binding } => {
+            let config = build_keymap_config(&key, &binding);
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: KEYMAP_CONFIG_ID,
+                data: config.into_bytes(),
+                reply: tx,
+            })
+        }
+        Command::AsrConfig {
+            clean,
+            platform,
+            uri,
+            api_key,
+            model,
+        } => {
+            if clean {
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYMAP_ASR_CONFIG_ID,
+                    data: vec![],
+                    reply: tx,
+                })
+            } else if let Some(plat) = platform {
+                let config =
+                    build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYMAP_ASR_CONFIG_ID,
+                    data: config.into_bytes(),
+                    reply: tx,
+                })
+            } else {
+                None // Interactive mode handled in main()
+            }
+        }
+        Command::WifiConfig { ssid, pass: _ } => {
+            if let Some(s) = ssid {
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: WIFI_SSID_ID,
+                    data: s.into_bytes(),
+                    reply: tx,
+                })
+            } else {
+                None // Interactive mode handled in main()
+            }
+        }
+        Command::Claude | Command::Hook => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Hook input: {}", input);
+            format_claude_message(&input).map(|msg| {
+                log::info!("Hook formatted: {}", msg);
+                let (tx, _) = oneshot::channel();
+                BleCmd::Send {
+                    char_uuid: KEYBOARD_DISPLAY_ID,
+                    data: msg.into_bytes(),
+                    reply: tx,
+                }
+            })
+        }
+        Command::Codex => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Codex hook input: {}", input);
+            format_codex_message(&input).map(|msg| {
+                log::info!("Codex hook formatted: {}", msg);
+                let (tx, _) = oneshot::channel();
+                BleCmd::Send {
+                    char_uuid: KEYBOARD_DISPLAY_ID,
+                    data: msg.into_bytes(),
+                    reply: tx,
+                }
+            })
+        }
+    }
+}
+
+async fn forward_command(port: u16, cmd: &Command) {
+    match cmd {
+        Command::Start | Command::Stop => unreachable!(),
+        Command::Send { message } => {
+            send_command(port, message).await;
+        }
+        Command::Keymap { key, binding } => {
+            let config = build_keymap_config(key, binding);
+            send_keymap(port, &config).await;
+        }
+        Command::AsrConfig {
+            clean: true,
+            platform: _,
+            uri: _,
+            api_key: _,
+            model: _,
+        } => {
+            send_asr_config(port, "").await;
+        }
+        Command::AsrConfig {
+            clean: false,
+            platform,
+            uri,
+            api_key,
+            model,
+        } => {
+            if let Some(plat) = platform {
+                let config =
+                    build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
+                send_asr_config(port, &config).await;
+            }
+            // If platform is None, interactive mode is handled in main()
+        }
+        Command::WifiConfig { ssid, pass } => {
+            if let Some(s) = ssid {
+                send_wifi_config(port, &s, pass.as_deref()).await;
+            }
+            // If ssid is None, interactive mode is handled in main()
+        }
+        Command::Claude | Command::Hook => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Hook input: {}", input);
+            if let Some(msg) = format_claude_message(&input) {
+                log::info!("Hook formatted: {}", msg);
+                send_command(port, &msg).await;
+            }
+        }
+        Command::Codex => {
+            let mut input = String::new();
+            io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Codex hook input: {}", input);
+            if let Some(msg) = format_codex_message(&input) {
+                log::info!("Codex hook formatted: {}", msg);
+                send_command(port, &msg).await;
+            }
+        }
+    }
+}
+
+fn build_keymap_config(key: &str, binding: &str) -> String {
+    let key_upper = key.to_uppercase();
+    let key_mapped = if key_upper == "YOLO" {
+        "SWITCH".to_string()
+    } else {
+        key_upper
     };
-    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    let parsed = parse_key_binding(binding);
+    serde_json::json!({ key_mapped: parsed }).to_string()
+}
 
-    let message = match event {
+fn build_asr_config(
+    platform: &str,
+    uri: Option<&str>,
+    api_key: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    serde_json::json!({
+        "platform": platform,
+        "uri": uri,
+        "api_key": api_key,
+        "model": model
+    })
+    .to_string()
+}
+
+/// Interactive ASR configuration
+fn interactive_asr_config(
+) -> anyhow::Result<(String, Option<String>, Option<String>, Option<String>)> {
+    let theme = ColorfulTheme::default();
+
+    // Provider selection (matching vibetty setup)
+    let providers = vec![
+        (
+            "openai",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "whisper-1",
+        ),
+        (
+            "bytefuture",
+            "https://models.bytefuture.ai/v1/audio/transcriptions",
+            "groq/whisper-large-v3",
+        ),
+        (
+            "groq",
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            "whisper-large-vurbo",
+        ),
+        (
+            "glm",
+            "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+            "glm-asr-2512",
+        ),
+        ("custom", "", ""),
+    ];
+
+    let provider_names: Vec<&str> = providers.iter().map(|(name, _, _)| *name).collect();
+    let provider_index = Select::with_theme(&theme)
+        .with_prompt("Select ASR provider")
+        .items(&provider_names)
+        .default(0)
+        .interact()?;
+
+    let (provider, default_uri, default_model) = providers[provider_index];
+
+    // URL
+    let uri = if provider == "custom" {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("API URL")
+            .allow_empty(false)
+            .interact()?;
+        Some(input)
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("API URL")
+            .default(default_uri.to_string())
+            .allow_empty(true)
+            .interact()?;
+        if input.is_empty() {
+            Some(default_uri.to_string())
+        } else {
+            Some(input)
+        }
+    };
+
+    // API Key
+    let api_key = Password::with_theme(&theme)
+        .with_prompt("API Key")
+        .allow_empty_password(false)
+        .interact()?;
+    let api_key = Some(api_key);
+
+    // Model
+    let model = if provider == "custom" {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Model")
+            .allow_empty(false)
+            .interact()?;
+        Some(input)
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Model")
+            .default(default_model.to_string())
+            .allow_empty(true)
+            .interact()?;
+        if input.is_empty() {
+            Some(default_model.to_string())
+        } else {
+            Some(input)
+        }
+    };
+
+    Ok(("whisper".to_string(), uri, api_key, model))
+}
+
+/// Interactive WiFi configuration
+fn interactive_wifi_config() -> anyhow::Result<(String, Option<String>)> {
+    let theme = ColorfulTheme::default();
+
+    // SSID
+    let ssid: String = Input::with_theme(&theme)
+        .with_prompt("WiFi SSID")
+        .allow_empty(false)
+        .interact()?;
+
+    // Password
+    let pass = Password::with_theme(&theme)
+        .with_prompt("WiFi Password")
+        .allow_empty_password(true)
+        .interact()?;
+    let pass = if pass.is_empty() { None } else { Some(pass) };
+
+    Ok((ssid, pass))
+}
+
+fn format_claude_message(input: &str) -> Option<String> {
+    let hook: serde_json::Value = serde_json::from_str(input).ok()?;
+    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    Some(match event {
         "UserPromptSubmit" => {
             let prompt = hook["prompt"].as_str().unwrap_or("");
             format!("[user] {}", truncate(prompt, 80))
@@ -160,17 +919,44 @@ async fn handle_hook() -> anyhow::Result<()> {
             let error = hook["error"].as_str().unwrap_or("unknown");
             format!("[error] {}", error)
         }
-        _ => {
-            info!("Unhandled hook event: {}", event);
-            return Ok(());
-        }
-    };
-
-    send_to_device(KEYBOARD_DISPLAY_ID, message.as_bytes())
-        .await
-        .ok();
-    Ok(())
+        _ => return None,
+    })
 }
+
+fn format_codex_message(input: &str) -> Option<String> {
+    let hook: serde_json::Value = serde_json::from_str(input).ok()?;
+    let event = hook["hook_event_name"].as_str().unwrap_or("");
+    Some(match event {
+        "UserPromptSubmit" => {
+            let prompt = hook["prompt"].as_str().unwrap_or("");
+            format!("[user] {}", truncate(prompt, 80))
+        }
+        "Stop" => {
+            let msg = hook["last_assistant_message"].as_str().unwrap_or("");
+            if msg.is_empty() {
+                "[stopped]".to_string()
+            } else {
+                format!("[done]\n{}", truncate(msg, 150))
+            }
+        }
+        "PreToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[tool] {}", tool)
+        }
+        "PostToolUse" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[done] {}", tool)
+        }
+        "SessionStart" => "[working]".to_string(),
+        "PermissionRequest" => {
+            let tool = hook["tool_name"].as_str().unwrap_or("");
+            format!("[perm] {}", tool)
+        }
+        _ => return None,
+    })
+}
+
+// ===== Parsing Utilities =====
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -180,46 +966,9 @@ fn truncate(s: &str, max_len: usize) -> String {
     }
 }
 
-// Send keymap configuration
-async fn send_keymap(key: &str, binding: &str) -> anyhow::Result<()> {
-    let key_upper = key.to_uppercase();
-
-    // Validate key name (before alias mapping)
-    let valid_keys = [
-        "MIC",
-        "CUSTOM",
-        "ESC",
-        "NEXT",
-        "BACKSPACE",
-        "SWITCH",
-        "ACCEPT",
-        "ROTATE",
-        "YOLO", // alias for SWITCH
-    ];
-    if !valid_keys.contains(&key_upper.as_str()) {
-        anyhow::bail!("Invalid key name. Valid keys: {}", valid_keys.join(", "));
-    }
-
-    // Map aliases to actual key names
-    let key_mapped = match key_upper.as_str() {
-        "YOLO" => "SWITCH".to_string(),
-        _ => key_upper,
-    };
-
-    // Use the mapped key name for the config
-    let parsed = parse_key_binding(binding);
-    let config = serde_json::json!({ key_mapped: parsed });
-    let json_str = config.to_string();
-    info!("Sending keymap: {}", json_str);
-
-    send_to_device(KEYMAP_CONFIG_ID, json_str.as_bytes()).await
-}
-
-// Unescape common escape sequences in quoted strings
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.chars();
-
     while let Some(c) = chars.next() {
         if c == '\\' {
             match chars.next() {
@@ -231,7 +980,6 @@ fn unescape_string(s: &str) -> String {
                 Some('\'') => result.push('\''),
                 Some('0') => result.push('\0'),
                 Some('x') => {
-                    // Handle \xNN hex escape
                     let hex1 = chars.next().unwrap_or('0');
                     let hex2 = chars.next().unwrap_or('0');
                     if let Some(byte) = u8::from_str_radix(&format!("{}{}", hex1, hex2), 16).ok() {
@@ -239,7 +987,6 @@ fn unescape_string(s: &str) -> String {
                     }
                 }
                 Some(other) => {
-                    // Unknown escape, keep as-is
                     result.push('\\');
                     result.push(other);
                 }
@@ -255,12 +1002,10 @@ fn unescape_string(s: &str) -> String {
 fn parse_key_binding(input: &str) -> serde_json::Value {
     let trimmed = input.trim();
 
-    // Text macro: quoted string
     if (trimmed.starts_with('"') && trimmed.ends_with('"'))
         || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
     {
         let content = &trimmed[1..trimmed.len() - 1];
-        // Unescape common escape sequences
         let unescaped = unescape_string(content);
         return serde_json::json!({
             "type": "text",
@@ -269,9 +1014,7 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Valid special key names (matching controller_zh.html)
     let valid_keys = [
-        // Basic navigation
         "enter",
         "return",
         "space",
@@ -289,18 +1032,15 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         "down",
         "left",
         "right",
-        // Modifiers (can also be used as standalone keys)
         "ctrl",
         "shift",
         "alt",
         "option",
-        // System keys
         "gui",
         "win",
         "meta",
         "cmd",
         "command",
-        // F-keys
         "f1",
         "f2",
         "f3",
@@ -313,7 +1053,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         "f10",
         "f11",
         "f12",
-        // Symbols
         "plus",
         "minus",
         "equal",
@@ -327,10 +1066,8 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         "bracketleft",
         "bracketright",
     ];
-
     let valid_modifiers = ["ctrl", "alt", "option", "shift", "meta", "win", "cmd"];
 
-    // Check if input is a single uppercase letter (as combo)
     if trimmed.len() == 1
         && trimmed
             .chars()
@@ -345,7 +1082,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Check if input is a single digit (as combo)
     if trimmed.len() == 1 && trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) {
         return serde_json::json!({
             "type": "combo",
@@ -355,7 +1091,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Check if input is a known key name
     let key_lower = trimmed.to_lowercase();
     if valid_keys.contains(&key_lower.as_str()) {
         return serde_json::json!({
@@ -366,11 +1101,8 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         });
     }
 
-    // Combo with + separator
     if trimmed.contains('+') {
         let parts: Vec<&str> = trimmed.split('+').map(|p| p.trim()).collect();
-
-        // Check if all parts except last are valid modifiers
         let all_mods_valid = parts[..parts.len() - 1]
             .iter()
             .all(|p| valid_modifiers.contains(&p.to_lowercase().as_str()));
@@ -378,8 +1110,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         if all_mods_valid {
             let last_part = parts.last().unwrap();
             let last_lower = last_part.to_lowercase();
-
-            // Check if last part is a valid key (known name OR alphanumeric)
             let is_valid_key = valid_keys.contains(&last_lower.as_str())
                 || (last_part.len() == 1
                     && last_part
@@ -406,7 +1136,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
         }
     }
 
-    // Default: text
     serde_json::json!({
         "type": "text",
         "value": trimmed,
@@ -414,64 +1143,146 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     })
 }
 
-async fn find_peripheral(
-    peripherals: &[PlatformPeripheral],
-    target_service: Uuid,
-) -> anyhow::Result<Option<PlatformPeripheral>> {
-    for peripheral in peripherals {
-        let addr = peripheral.address();
-        if let Some(props) = peripheral.properties().await? {
-            let name = props.local_name.unwrap_or("(unknown)".to_string());
-            let rssi = props.rssi.unwrap_or(0);
-            info!("  {} - {} (RSSI: {})", addr, name, rssi);
+// ===== Main =====
 
-            for service in &props.services {
-                debug!("    Service UUID: {}", service);
-            }
+fn init_logger() {
+    // Get log directory: ~/.vibekeys/logs
+    let log_dir = dirs::home_dir()
+        .map(|p| p.join(".vibekeys").join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
 
-            let has_target_service = props.services.iter().any(|s| *s == target_service);
-
-            if has_target_service {
-                info!("    >>> Found target service!");
-                return Ok(Some(peripheral.clone()));
-            }
-
-            debug!("----------------------------");
-        }
+    // Create log directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("Failed to create log directory {:?}: {}", log_dir, e);
+        // Fall back to env_logger behavior (stderr only)
+        env_logger::init();
+        return;
     }
 
-    Ok(None)
+    // Initialize flexi_logger
+    if let Err(e) = flexi_logger::Logger::try_with_env_or_str("info")
+        .map(|logger| {
+            logger
+                .log_to_file(
+                    flexi_logger::FileSpec::default()
+                        .directory(&log_dir)
+                        .basename("vibekeys")
+                        .suppress_timestamp(),
+                )
+                .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+                .rotate(
+                    flexi_logger::Criterion::Size(10_000_000), // 10MB
+                    flexi_logger::Naming::Timestamps,
+                    flexi_logger::Cleanup::KeepLogFiles(5),
+                )
+                .duplicate_to_stdout(flexi_logger::Duplicate::All)
+                .format_for_stderr(flexi_logger::default_format)
+        })
+        .and_then(|logger| logger.start())
+    {
+        eprintln!("Failed to initialize logger: {}, falling back to stderr", e);
+        env_logger::init();
+    }
 }
 
-// Connect to device and discover services
-async fn connect_and_discover(peripheral: &PlatformPeripheral) -> anyhow::Result<()> {
-    let t = Instant::now();
-    peripheral.connect().await?;
-    info!("[{:.0?}] Connected", t.elapsed());
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    init_logger();
+    let cli = Cli::parse();
+    let port = get_port();
 
-    let t2 = Instant::now();
-    peripheral.discover_services().await?;
-    info!("[{:.0?}] Services discovered", t2.elapsed());
+    // Handle stop
+    if matches!(cli.command, Command::Stop) {
+        let url = format!("http://127.0.0.1:{}/shutdown", port);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .no_proxy()
+            .build();
 
-    Ok(())
-}
-
-// Send message to characteristic
-async fn send_message(
-    peripheral: &PlatformPeripheral,
-    char_uuid: Uuid,
-    data: &[u8],
-) -> anyhow::Result<()> {
-    let characteristics = peripheral.characteristics();
-
-    for char in &characteristics {
-        if char.uuid == char_uuid {
-            peripheral
-                .write(char, data, WriteType::WithResponse)
-                .await?;
-            return Ok(());
+        if let Ok(client) = client {
+            match client.get(&url).send().await {
+                Ok(_) => log::info!("Server stopped"),
+                Err(_) => log::error!("Server not running"),
+            }
+        } else {
+            log::error!("Server not running");
         }
+        return;
     }
 
-    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
+    // Handle start
+    if matches!(cli.command, Command::Start) {
+        if check_server(port).await {
+            log::info!("vibekeys server already running on port {}", port);
+            return;
+        }
+        run_server(port, None).await;
+        return;
+    }
+
+    // Handle interactive ASR config
+    if matches!(cli.command, Command::AsrConfig { platform: None, clean: false, .. }) {
+        match interactive_asr_config() {
+            Ok((platform, uri, api_key, model)) => {
+                let config = build_asr_config(
+                    &platform,
+                    uri.as_deref(),
+                    api_key.as_deref(),
+                    model.as_deref(),
+                );
+                if check_server(port).await {
+                    send_asr_config(port, &config).await;
+                } else {
+                    run_server(
+                        port,
+                        Some(Command::AsrConfig {
+                            clean: false,
+                            platform: Some(platform),
+                            uri,
+                            api_key,
+                            model,
+                        }),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => {
+                log::error!("ASR config failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Handle interactive WiFi config
+    if matches!(cli.command, Command::WifiConfig { ssid: None, .. }) {
+        match interactive_wifi_config() {
+            Ok((ssid, pass)) => {
+                if check_server(port).await {
+                    send_wifi_config(port, &ssid, pass.as_deref()).await;
+                } else {
+                    run_server(
+                        port,
+                        Some(Command::WifiConfig {
+                            ssid: Some(ssid),
+                            pass,
+                        }),
+                    )
+                    .await;
+                }
+            }
+            Err(e) => {
+                log::error!("WiFi config failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Other commands: check if server is already running, if not start it
+    if check_server(port).await {
+        forward_command(port, &cli.command).await;
+    } else {
+        run_server(port, Some(cli.command)).await;
+    }
 }
