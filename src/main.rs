@@ -652,7 +652,9 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
         Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Hook input: {}", input);
             format_claude_message(&input).map(|msg| {
+                log::info!("Hook formatted: {}", msg);
                 let (tx, _) = oneshot::channel();
                 BleCmd::Send {
                     char_uuid: KEYBOARD_DISPLAY_ID,
@@ -664,7 +666,9 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
         Command::Codex => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Codex hook input: {}", input);
             format_codex_message(&input).map(|msg| {
+                log::info!("Codex hook formatted: {}", msg);
                 let (tx, _) = oneshot::channel();
                 BleCmd::Send {
                     char_uuid: KEYBOARD_DISPLAY_ID,
@@ -708,14 +712,18 @@ async fn forward_command(port: u16, cmd: &Command) {
         Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Hook input: {}", input);
             if let Some(msg) = format_claude_message(&input) {
+                log::info!("Hook formatted: {}", msg);
                 send_command(port, &msg).await;
             }
         }
         Command::Codex => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
+            log::debug!("Codex hook input: {}", input);
             if let Some(msg) = format_codex_message(&input) {
+                log::info!("Codex hook formatted: {}", msg);
                 send_command(port, &msg).await;
             }
         }
