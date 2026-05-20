@@ -1,3 +1,6 @@
+use arboard::Clipboard;
+use axum::http::StatusCode;
+use axum::Json;
 use axum::{
     extract::State,
     routing::{get, post},
@@ -6,7 +9,6 @@ use axum::{
 use clap::{Parser, Subcommand};
 use std::fs;
 use std::io::{self, Read, Write as IoWrite};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
@@ -16,16 +18,16 @@ const DEFAULT_PORT: u16 = 42837;
 use anyhow;
 use btleplug::api::{Central, Manager as _, Peripheral, ScanFilter, WriteType};
 use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
+use futures::StreamExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-mod asr;
 mod config;
-mod util;
 
 const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
+const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
 
 // ===== CLI =====
 
@@ -177,6 +179,14 @@ async fn find_peripheral(
 async fn connect_and_discover(p: &PlatformPeripheral) -> anyhow::Result<()> {
     p.connect().await?;
     p.discover_services().await?;
+    // Subscribe to ASR result characteristic notifications
+    for c in p.characteristics() {
+        if c.uuid == KEYMAP_ASR_RESULT_ID {
+            p.subscribe(&c).await?;
+            log_message("Subscribed to ASR result notifications");
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -196,6 +206,86 @@ enum BleCmd {
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(), String>>,
     },
+}
+
+/// Write acknowledge (1u8) to ASR result characteristic
+async fn write_asr_acknowledge(
+    peripheral: &PlatformPeripheral,
+    asr_char: &btleplug::api::Characteristic,
+) {
+    if let Err(e) = peripheral
+        .write(asr_char, &[1u8], WriteType::WithResponse)
+        .await
+    {
+        log_message(&format!("Failed to write ASR acknowledge: {}", e));
+    } else {
+        log_message("ASR acknowledge sent");
+    }
+}
+
+/// Set text to clipboard
+fn set_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = Clipboard::new() {
+        if let Err(e) = clipboard.set_text(text) {
+            log_message(&format!("Failed to set clipboard: {}", e));
+        } else {
+            log_message(&format!("Text set to clipboard: {}", text));
+        }
+    } else {
+        log_message("Failed to access clipboard");
+    }
+}
+
+/// Handle ASR result notifications: set to clipboard and acknowledge with 1u8
+async fn handle_asr_notifications(
+    peripheral: &PlatformPeripheral,
+) -> Option<(btleplug::api::Characteristic, String)> {
+    log_message("ASR notification handler started");
+
+    // Find the ASR result characteristic
+    let asr_char = peripheral
+        .characteristics()
+        .iter()
+        .find(|c| c.uuid == KEYMAP_ASR_RESULT_ID)
+        .cloned()?;
+
+    let mut notify_stream = peripheral.notifications().await.ok()?;
+
+    // Listen for notifications, filtering by ASR characteristic UUID
+    while let Some(notification) = notify_stream.next().await {
+        // Only process notifications from ASR result characteristic
+        if notification.uuid != KEYMAP_ASR_RESULT_ID {
+            continue;
+        }
+
+        let data = notification.value;
+        if !data.is_empty() {
+            // Extract string from notification data
+            let text = String::from_utf8_lossy(&data).to_string();
+            return Some((asr_char, text));
+        }
+    }
+
+    None
+}
+
+enum SelectResult {
+    BleCmd(BleCmd),
+    AsrResult(btleplug::api::Characteristic, String),
+}
+
+async fn select_rx_and_notify(
+    rx: &mut mpsc::Receiver<BleCmd>,
+    peripheral: &PlatformPeripheral,
+) -> Option<SelectResult> {
+    tokio::select! {
+        cmd = rx.recv() => {
+            cmd.map(|c| SelectResult::BleCmd(c))
+        }
+        asr_result = handle_asr_notifications(peripheral) => {
+            asr_result.map(|res| SelectResult::AsrResult(res.0, res.1))
+        }
+    }
 }
 
 async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
@@ -237,12 +327,12 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
             }
         }
         if let Some(ref p) = peripheral {
-            match rx.recv().await {
-                Some(BleCmd::Send {
+            match select_rx_and_notify(&mut rx, p).await {
+                Some(SelectResult::BleCmd(BleCmd::Send {
                     char_uuid,
                     data,
                     reply,
-                }) => {
+                })) => {
                     // Check connection before sending with 1s timeout
                     log_message("check connect status");
                     let connected =
@@ -261,6 +351,11 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                     let result = send_ble(p, char_uuid, &data).await;
                     log_message("send end");
                     let _ = reply.send(result.map_err(|e| e.to_string()));
+                }
+                Some(SelectResult::AsrResult(asr_char, text)) => {
+                    log_message(&format!("ASR result received: {}", text));
+                    set_to_clipboard(&text);
+                    write_asr_acknowledge(p, &asr_char).await;
                 }
                 None => return,
             }
@@ -299,7 +394,6 @@ async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -
 
 struct AppState {
     ble_tx: mpsc::Sender<BleCmd>,
-    counter: AtomicU64,
     shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
 }
 
@@ -307,9 +401,8 @@ async fn health_handler() -> &'static str {
     "ok"
 }
 
-async fn root_handler(State(state): State<Arc<AppState>>) -> String {
-    let count = state.counter.fetch_add(1, Ordering::Relaxed) + 1;
-    format!("vibekeys server running\nRequests: {}\n", count)
+async fn root_handler(State(_): State<Arc<AppState>>) -> String {
+    format!("vibekeys server running")
 }
 
 async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
@@ -322,7 +415,6 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
 }
 
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
-    state.counter.fetch_add(1, Ordering::Relaxed);
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     if result.contains("disconnected") {
@@ -336,7 +428,6 @@ async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> Strin
 }
 
 async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
-    state.counter.fetch_add(1, Ordering::Relaxed);
     let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     if result.contains("disconnected") {
@@ -350,6 +441,9 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
 }
 
 async fn run_server(port: u16, initial_cmd: Option<Command>) {
+    // Load ASR config
+    let asr_config = config::load_config();
+
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -361,7 +455,6 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
 
     let state = Arc::new(AppState {
         ble_tx,
-        counter: AtomicU64::new(0),
         shutdown_tx: Mutex::new(Some(shutdown_tx)),
     });
 
