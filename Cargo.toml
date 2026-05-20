@@ -20,12 +20,6 @@ serde_json = "1.0"
 axum = "0.8"
 reqwest = { version = "0.13", features = ["blocking", "multipart", "json"] }
 bytes = "1"
-dialoguer = "0.11"
-toml = "0.8"
-dirs = "6"
 arboard = "3"
 futures = "0.3"
-
-[target.'cfg(unix)'.dependencies]
-daemonize = "0.5"
-libc = "0.2"
+dialoguer = "0.11"

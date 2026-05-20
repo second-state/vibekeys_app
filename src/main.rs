@@ -6,6 +6,7 @@ use axum::{
     Router,
 };
 use clap::{Parser, Subcommand};
+use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use std::fs;
 use std::io::{self, Read, Write as IoWrite};
 use std::sync::Arc;
@@ -25,6 +26,9 @@ const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
 const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
+const KEYMAP_ASR_CONFIG_ID: Uuid = Uuid::from_u128(0xfaf9e22c_e8fc_421b_afef_8b5236813fb1);
+const WIFI_SSID_ID: Uuid = Uuid::from_u128(0x1fda4d6e_2f14_42b0_96fa_453bed238375);
+const WIFI_PASS_ID: Uuid = Uuid::from_u128(0xa987ab18_a940_421a_a1d7_b94ee22bccbe);
 
 // ===== CLI =====
 
@@ -51,14 +55,27 @@ enum Command {
     Codex,
     /// Stop the running server
     Stop,
-    /// Setup ASR configuration
-    Setup {
-        /// ASR provider (OpenAI, ByteFuture, Groq, GLM, Custom)
-        #[arg(short, long)]
+    /// Configure ASR settings
+    AsrConfig {
+        /// Platform (e.g., whisper) - omit for interactive mode
         platform: Option<String>,
-        /// API key for the ASR service
+        /// API URI
+        #[arg(long)]
+        uri: Option<String>,
+        /// API key
         #[arg(long)]
         api_key: Option<String>,
+        /// Model name
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Configure WiFi settings
+    WifiConfig {
+        /// WiFi SSID - omit for interactive mode
+        ssid: Option<String>,
+        /// WiFi password
+        #[arg(long)]
+        pass: Option<String>,
     },
 }
 
@@ -220,12 +237,12 @@ async fn write_asr_acknowledge(
 fn set_to_clipboard(text: &str) {
     if let Ok(mut clipboard) = Clipboard::new() {
         if let Err(e) = clipboard.set_text(text) {
-            log_message(&format!("Failed to set clipboard: {}", e));
+            log::error!("Failed to set clipboard: {}", e);
         } else {
-            log_message(&format!("Text set to clipboard: {}", text));
+            log::info!("Text set to clipboard: {}", text);
         }
     } else {
-        log_message("Failed to access clipboard");
+        log::error!("Failed to access clipboard");
     }
 }
 
@@ -433,6 +450,52 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
     result
 }
 
+async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let result = ble_send(&state.ble_tx, KEYMAP_ASR_CONFIG_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    if result.contains("disconnected") {
+        log_message("BLE disconnected, shutting down server");
+        let tx = state.shutdown_tx.lock().await.take();
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+    result
+}
+
+async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    // Parse JSON with ssid and pass
+    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&body) {
+        let ssid = config["ssid"].as_str();
+        let pass = config["pass"].as_str();
+
+        let mut results = Vec::new();
+
+        // Send SSID first
+        if let Some(s) = ssid {
+            results.push(ble_send(&state.ble_tx, WIFI_SSID_ID, s.as_bytes()).await);
+        }
+
+        // Then send password
+        if let Some(p) = pass {
+            results.push(ble_send(&state.ble_tx, WIFI_PASS_ID, p.as_bytes()).await);
+        }
+
+        // If BLE disconnected, shut down the server
+        if results.iter().any(|r| r.contains("disconnected")) {
+            log_message("BLE disconnected, shutting down server");
+            let tx = state.shutdown_tx.lock().await.take();
+            if let Some(tx) = tx {
+                let _ = tx.send(());
+            }
+        }
+
+        results.join("\n")
+    } else {
+        "error: invalid JSON format, expected {\"ssid\": \"...\", \"pass\": \"...\"}\n".to_string()
+    }
+}
+
 async fn run_server(port: u16, initial_cmd: Option<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -456,9 +519,11 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
         .route("/shutdown", get(shutdown_handler))
         .route("/send", post(send_handler))
         .route("/keymap", post(keymap_handler))
+        .route("/asr-config", post(asr_config_handler))
+        .route("/wifi-config", post(wifi_config_handler))
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{}", port);
+    let addr = format!("127.0.0.1:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     log_message(&format!("Listening on {}", addr));
     println!("vibekeys server started on port {}", port);
@@ -517,9 +582,56 @@ async fn send_keymap(port: u16, config: &str) {
     }
 }
 
+async fn send_asr_config(port: u16, config: &str) {
+    let url = format!("http://127.0.0.1:{}/asr-config", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
+async fn send_wifi_config(port: u16, ssid: &str, pass: Option<&str>) {
+    let url = format!("http://127.0.0.1:{}/wifi-config", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build();
+
+    let config = serde_json::json!({
+        "ssid": ssid,
+        "pass": pass,
+    });
+
+    if let Ok(client) = client {
+        match client.post(&url).body(config.to_string()).send().await {
+            Ok(resp) => {
+                if let Ok(text) = resp.text().await {
+                    print!("{}", text);
+                }
+            }
+            Err(_) => eprintln!("Failed to connect to server"),
+        }
+    } else {
+        eprintln!("Failed to connect to server");
+    }
+}
+
 fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
     match cmd {
-        Command::Start | Command::Stop | Command::Setup { .. } => None,
+        Command::Start | Command::Stop => None,
         Command::Send { message } => {
             let (tx, _) = oneshot::channel();
             Some(BleCmd::Send {
@@ -536,6 +648,37 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
                 data: config.into_bytes(),
                 reply: tx,
             })
+        }
+        Command::AsrConfig {
+            platform,
+            uri,
+            api_key,
+            model,
+        } => {
+            if let Some(plat) = platform {
+                let config =
+                    build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYMAP_ASR_CONFIG_ID,
+                    data: config.into_bytes(),
+                    reply: tx,
+                })
+            } else {
+                None // Interactive mode handled in main()
+            }
+        }
+        Command::WifiConfig { ssid, pass: _ } => {
+            if let Some(s) = ssid {
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: WIFI_SSID_ID,
+                    data: s.into_bytes(),
+                    reply: tx,
+                })
+            } else {
+                None // Interactive mode handled in main()
+            }
         }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
@@ -566,13 +709,32 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
 
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
-        Command::Start | Command::Stop | Command::Setup { .. } => unreachable!(),
+        Command::Start | Command::Stop => unreachable!(),
         Command::Send { message } => {
             send_command(port, message).await;
         }
         Command::Keymap { key, binding } => {
             let config = build_keymap_config(key, binding);
             send_keymap(port, &config).await;
+        }
+        Command::AsrConfig {
+            platform,
+            uri,
+            api_key,
+            model,
+        } => {
+            if let Some(plat) = platform {
+                let config =
+                    build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
+                send_asr_config(port, &config).await;
+            }
+            // If platform is None, interactive mode is handled in main()
+        }
+        Command::WifiConfig { ssid, pass } => {
+            if let Some(s) = ssid {
+                send_wifi_config(port, &s, pass.as_deref()).await;
+            }
+            // If ssid is None, interactive mode is handled in main()
         }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
@@ -600,6 +762,130 @@ fn build_keymap_config(key: &str, binding: &str) -> String {
     };
     let parsed = parse_key_binding(binding);
     serde_json::json!({ key_mapped: parsed }).to_string()
+}
+
+fn build_asr_config(
+    platform: &str,
+    uri: Option<&str>,
+    api_key: Option<&str>,
+    model: Option<&str>,
+) -> String {
+    serde_json::json!({
+        "platform": platform,
+        "uri": uri,
+        "api_key": api_key,
+        "model": model
+    })
+    .to_string()
+}
+
+/// Interactive ASR configuration
+fn interactive_asr_config(
+) -> anyhow::Result<(String, Option<String>, Option<String>, Option<String>)> {
+    let theme = ColorfulTheme::default();
+
+    // Provider selection (matching vibetty setup)
+    let providers = vec![
+        (
+            "openai",
+            "https://api.openai.com/v1/audio/transcriptions",
+            "whisper-1",
+        ),
+        (
+            "bytefuture",
+            "https://models.bytefuture.ai/v1/audio/transcriptions",
+            "groq/whisper-large-v3",
+        ),
+        (
+            "groq",
+            "https://api.groq.com/openai/v1/audio/transcriptions",
+            "whisper-large-vurbo",
+        ),
+        (
+            "glm",
+            "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+            "glm-asr-2512",
+        ),
+        ("custom", "", ""),
+    ];
+
+    let provider_names: Vec<&str> = providers.iter().map(|(name, _, _)| *name).collect();
+    let provider_index = Select::with_theme(&theme)
+        .with_prompt("Select ASR provider")
+        .items(&provider_names)
+        .default(0)
+        .interact()?;
+
+    let (provider, default_uri, default_model) = providers[provider_index];
+
+    // URL
+    let uri = if provider == "custom" {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("API URL")
+            .allow_empty(false)
+            .interact()?;
+        Some(input)
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("API URL")
+            .default(default_uri.to_string())
+            .allow_empty(true)
+            .interact()?;
+        if input.is_empty() {
+            Some(default_uri.to_string())
+        } else {
+            Some(input)
+        }
+    };
+
+    // API Key
+    let api_key = Password::with_theme(&theme)
+        .with_prompt("API Key")
+        .allow_empty_password(false)
+        .interact()?;
+    let api_key = Some(api_key);
+
+    // Model
+    let model = if provider == "custom" {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Model")
+            .allow_empty(false)
+            .interact()?;
+        Some(input)
+    } else {
+        let input: String = Input::with_theme(&theme)
+            .with_prompt("Model")
+            .default(default_model.to_string())
+            .allow_empty(true)
+            .interact()?;
+        if input.is_empty() {
+            Some(default_model.to_string())
+        } else {
+            Some(input)
+        }
+    };
+
+    Ok(("whisper".to_string(), uri, api_key, model))
+}
+
+/// Interactive WiFi configuration
+fn interactive_wifi_config() -> anyhow::Result<(String, Option<String>)> {
+    let theme = ColorfulTheme::default();
+
+    // SSID
+    let ssid: String = Input::with_theme(&theme)
+        .with_prompt("WiFi SSID")
+        .allow_empty(false)
+        .interact()?;
+
+    // Password
+    let pass = Password::with_theme(&theme)
+        .with_prompt("WiFi Password")
+        .allow_empty_password(true)
+        .interact()?;
+    let pass = if pass.is_empty() { None } else { Some(pass) };
+
+    Ok((ssid, pass))
 }
 
 fn format_claude_message(input: &str) -> Option<String> {
@@ -904,6 +1190,82 @@ fn main() {
             .unwrap();
         rt.block_on(run_server(port, None));
         return;
+    }
+
+    // Handle interactive ASR config
+    if matches!(cli.command, Command::AsrConfig { platform: None, .. }) {
+        match interactive_asr_config() {
+            Ok((platform, uri, api_key, model)) => {
+                let config = build_asr_config(
+                    &platform,
+                    uri.as_deref(),
+                    api_key.as_deref(),
+                    model.as_deref(),
+                );
+                let server_running = check_server(port);
+                if server_running {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(send_asr_config(port, &config));
+                    return;
+                } else {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(run_server(
+                        port,
+                        Some(Command::AsrConfig {
+                            platform: Some(platform),
+                            uri,
+                            api_key,
+                            model,
+                        }),
+                    ));
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("ASR config failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    // Handle interactive WiFi config
+    if matches!(cli.command, Command::WifiConfig { ssid: None, .. }) {
+        match interactive_wifi_config() {
+            Ok((ssid, pass)) => {
+                let server_running = check_server(port);
+                if server_running {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(send_wifi_config(port, &ssid, pass.as_deref()));
+                    return;
+                } else {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
+                    rt.block_on(run_server(
+                        port,
+                        Some(Command::WifiConfig {
+                            ssid: Some(ssid),
+                            pass,
+                        }),
+                    ));
+                    return;
+                }
+            }
+            Err(e) => {
+                eprintln!("WiFi config failed: {}", e);
+                std::process::exit(1);
+            }
+        }
     }
 
     // Other commands: check if server is already running, if not start it
