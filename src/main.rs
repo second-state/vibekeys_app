@@ -1,6 +1,5 @@
 use arboard::Clipboard;
-use axum::http::StatusCode;
-use axum::Json;
+
 use axum::{
     extract::State,
     routing::{get, post},
@@ -21,8 +20,6 @@ use btleplug::platform::{Adapter, Manager, Peripheral as PlatformPeripheral};
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use uuid::Uuid;
-
-mod config;
 
 const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7b09c03e7e0);
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
@@ -122,15 +119,6 @@ fn check_server(port: u16) -> bool {
     false
 }
 
-// ===== Daemon (Unix) =====
-
-#[cfg(unix)]
-fn do_daemonize() -> Result<(), Box<dyn std::error::Error>> {
-    use daemonize::Daemonize;
-    Daemonize::new().start()?;
-    Ok(())
-}
-
 // ===== BLE Functions =====
 
 async fn get_adapter() -> anyhow::Result<(Manager, Adapter)> {
@@ -213,8 +201,13 @@ async fn write_asr_acknowledge(
     peripheral: &PlatformPeripheral,
     asr_char: &btleplug::api::Characteristic,
 ) {
+    #[cfg(not(target_os = "macos"))]
+    const PASTE_CODE: u8 = 1;
+    #[cfg(target_os = "macos")]
+    const PASTE_CODE: u8 = 1;
+
     if let Err(e) = peripheral
-        .write(asr_char, &[1u8], WriteType::WithResponse)
+        .write(asr_char, &[PASTE_CODE], WriteType::WithResponse)
         .await
     {
         log_message(&format!("Failed to write ASR acknowledge: {}", e));
@@ -441,9 +434,6 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
 }
 
 async fn run_server(port: u16, initial_cmd: Option<Command>) {
-    // Load ASR config
-    let asr_config = config::load_config();
-
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
 
@@ -876,15 +866,6 @@ fn main() {
     let cli = Cli::parse();
     let port = get_port();
 
-    // Handle setup
-    if let Command::Setup { platform, api_key } = &cli.command {
-        if let Err(e) = config::run_setup(platform.clone(), api_key.clone()) {
-            eprintln!("Setup failed: {}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
-
     // Handle stop
     if matches!(cli.command, Command::Stop) {
         let rt = tokio::runtime::Builder::new_current_thread()
@@ -917,15 +898,6 @@ fn main() {
             return;
         }
 
-        // Daemonize (Unix only, must be before creating tokio runtime)
-        #[cfg(unix)]
-        {
-            if let Err(e) = do_daemonize() {
-                eprintln!("Failed to daemonize: {}", e);
-                std::process::exit(1);
-            }
-        }
-
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -945,14 +917,6 @@ fn main() {
             .unwrap();
         rt.block_on(forward_command(port, &cli.command));
         return;
-    }
-
-    #[cfg(unix)]
-    {
-        if let Err(e) = do_daemonize() {
-            eprintln!("Failed to daemonize: {}", e);
-            std::process::exit(1);
-        }
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
