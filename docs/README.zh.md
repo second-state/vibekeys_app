@@ -1,6 +1,6 @@
 # VibeKeys
 
-BLE CLI 工具，用于控制 [VibeKeys MAX](https://github.com/L-jasmine/vibekeys) 键盘设备。通过蓝牙低功耗 (BLE) 连接设备，发送文字和按键映射配置。
+BLE CLI 工具，用于控制 [VibeKeys MAX](https://github.com/L-jasmine/vibekeys) 键盘设备。通过蓝牙低功耗 (BLE) 连接设备，发送文字、按键映射配置、ASR 设置和 WiFi 设置。
 
 ## 安装
 
@@ -54,6 +54,18 @@ claude plugin install vibekeys@second-state-tools
 ```
 
 ## 用法
+
+### 服务器模式
+
+VibeKeys 作为后台服务器运行。命令会自动启动服务器（如果未运行）或与现有服务器通信。
+
+```bash
+# 显式启动服务器
+vibekeys start
+
+# 停止服务器
+vibekeys stop
+```
 
 ### 发送文字到键盘显示
 
@@ -177,7 +189,11 @@ vibekeys keymap BACKSPACE Backspace
 从 stdin 读取 Claude Code hook JSON 事件，转发到键盘显示。用于 Claude Code 的 hooks 集成。
 
 ```bash
-vibekeys hook
+# For Claude Code (别名: hook)
+vibekeys claude
+
+# For Codex
+vibekeys codex
 ```
 
 ### 支持的事件
@@ -185,7 +201,7 @@ vibekeys hook
 | 事件 | 显示内容 |
 |------|----------|
 | `UserPromptSubmit` | `[user] <prompt 前80字符>` |
-| `Stop` | `[stopped]` |
+| `Stop` | `[stopped]` 或 `[done] <最后消息>` |
 | `Notification` | `[notify] <消息前80字符>` |
 | `PreToolUse` | `[tool] <工具名>` |
 | `PostToolUse` | `[done] <工具名>` |
@@ -223,40 +239,113 @@ vibekeys hook
 配置 ASR（自动语音识别）服务用于语音功能：
 
 ```bash
-# 交互式配置 - 提示选择平台和输入 API Key
-vibekeys setup
+# 交互式配置 - 提示选择供应商和输入 API Key
+vibekeys asr-config
 
-# 直接配置（带参数）
-vibekeys setup --platform <平台> --api-key <密钥>
+# 直接配置
+vibekeys asr-config --uri <URI> --api-key <密钥> --model <模型>
 
-# 简写形式
-vibekeys setup -p <平台> --api-key <密钥>
+# 示例：OpenAI
+vibekeys asr-config --uri "https://api.openai.com/v1/audio/transcriptions" --api-key sk-xxxx --model whisper-1
 ```
 
-### 支持的平台
+### 支持的供应商（交互式模式）
 
-| 平台 | 说明 | 模型 |
-|------|------|------|
-| `OpenAI` | OpenAI Whisper | `whisper-1` |
-| `ByteFuture` | ByteFuture Groq Whisper | `groq/whisper-large-v3` |
-| `Groq` | Groq Whisper（速度快，有免费额度） | `whisper-large-v3-turbo` |
-| `GLM` | GLM（智谱）ASR | `glm-asr-2512` |
-| `Custom` | 自定义 ASR 端点 | - |
+| 供应商 | 默认 URI | 默认模型 |
+|--------|----------|----------|
+| `openai` | `https://api.openai.com/v1/audio/transcriptions` | `whisper-1` |
+| `bytefuture` | `https://models.bytefuture.ai/v1/audio/transcriptions` | `groq/whisper-large-v3` |
+| `groq` | `https://api.groq.com/openai/v1/audio/transcriptions` | `whisper-large-vurbo` |
+| `glm` | `https://open.bigmodel.cn/api/paas/v4/audio/transcriptions` | `glm-asr-2512` |
+| `custom` | (必需) | (必需) |
 
-配置保存在 `~/.vibekeys/config.toml`。
+**注意：** 发送到设备的 `platform` 字段始终为 `"whisper"`。交互式模式中的供应商选择仅影响默认的 URI 和 model 值，方便快速配置。
 
 ### 使用示例
 
 ```bash
+# 交互式模式（推荐）- 从供应商列表选择，自动填充默认值
+vibekeys asr-config
+
 # 配置 Groq（速度快，通常有免费额度）
-vibekeys setup --platform Groq --api-key gsk_xxxx
+vibekeys asr-config --uri "https://api.groq.com/openai/v1/audio/transcriptions" --api-key gsk_xxxx --model whisper-large-vurbo
 
-# 配置 OpenAI
-vibekeys setup -p OpenAI --api-key sk-xxxx
-
-# 交互式模式 - 会提示选择平台和输入 API Key
-vibekeys setup
+# 配置 OpenAI（显式指定 URI 和 model）
+vibekeys asr-config --uri "https://api.openai.com/v1/audio/transcriptions" --api-key sk-xxxx --model whisper-1
 ```
+
+## WiFi 配置
+
+为设备配置 WiFi 设置：
+
+```bash
+# 交互式配置 - 提示输入 SSID 和密码
+vibekeys wifi-config
+
+# 直接配置
+vibekeys wifi-config <SSID> --pass <密码>
+
+# 开放网络（无密码）
+vibekeys wifi-config MyNetwork
+```
+
+### 示例
+
+```bash
+# 交互式模式
+vibekeys wifi-config
+
+# 配置带密码的网络
+vibekeys wifi-config "MyWiFi-5G" --pass "mypassword"
+
+# 配置开放网络
+vibekeys wifi-config "PublicWiFi"
+```
+
+## HTTP API
+
+服务器运行时，也可以使用 HTTP 端点：
+
+```bash
+# 发送文字
+curl -X POST http://127.0.0.1:42837/send -d "Hello"
+
+# 配置按键映射
+curl -X POST http://127.0.0.1:42837/keymap -d '{"KEY":"value"}'
+
+# 配置 ASR
+curl -X POST http://127.0.0.1:42837/asr-config -d '{
+  "platform": "whisper",
+  "uri": "https://api.openai.com/v1/audio/transcriptions",
+  "api_key": "sk-xxxx",
+  "model": "whisper-1"
+}'
+
+# 配置 WiFi
+curl -X POST http://127.0.0.1:42837/wifi-config -d '{
+  "ssid": "MyWiFi",
+  "pass": "password"
+}'
+```
+
+## ASR 结果处理
+
+当设备通过 BLE 通知发送 ASR 转录结果时：
+- 文本会自动复制到剪贴板
+- 会向设备发送确认信号
+
+## 日志文件
+
+VibeKeys 将日志存储在以下位置：
+
+- **Linux/macOS**: `~/.vibekeys/logs/`
+- **Windows**: `%USERPROFILE%\.vibekeys\logs`（通常是 `C:\Users\<用户名>\.vibekeys\logs`）
+
+日志会自动轮转：
+- 单文件最大 10MB
+- 保留最近 5 个日志文件
+
+日志同时输出到 stderr，方便实时查看。可通过 `RUST_LOG` 环境变量设置日志级别。
 
 ## 开发
 

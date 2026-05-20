@@ -1,11 +1,11 @@
 ---
 name: vibekeys
-description: Control VibeKeys MAX BLE keyboard - install, configure keymaps, and send text
+description: Control VibeKeys MAX BLE keyboard - install, configure keymaps, ASR, and WiFi
 ---
 
 # VibeKeys Controller
 
-Control the VibeKeys MAX BLE keyboard device from Claude Code. Use this skill to install the CLI, configure key mappings, and send text to the keyboard display.
+Control the VibeKeys MAX BLE keyboard device from Claude Code. Use this skill to install the CLI, configure key mappings, configure ASR/WiFi settings, and send text to the keyboard display.
 
 ## Prerequisites
 
@@ -51,11 +51,11 @@ cargo build --release
 
 ### Server Mode
 
-VibeKeys runs as a background daemon server:
+VibeKeys runs as a background server. Commands automatically start the server if it's not running:
 
 ```bash
-# Start the server (runs in background, first command starts it)
-vibekeys
+# Explicitly start the server
+vibekeys start
 
 # Stop the server
 vibekeys stop
@@ -81,9 +81,69 @@ vibekeys keymap <KEY> <BINDING>
 
 Each call configures one key. The device merges it into the existing keymap.
 
+### ASR Configuration
+
+Configure the ASR (Automatic Speech Recognition) service for voice features:
+
+```bash
+# Interactive mode - prompts for provider selection and API key
+vibekeys asr-config
+
+# Direct configuration with provider
+vibekeys asr-config whisper --uri <URI> --api-key <KEY> --model <MODEL>
+```
+
+**Supported providers (affects default URI and model):**
+- `openai` - OpenAI Whisper (default: `https://api.openai.com/v1/audio/transcriptions`, `whisper-1`)
+- `bytefuture` - ByteFuture Groq Whisper (default: `groq/whisper-large-v3`)
+- `groq` - Groq Whisper (default: `whisper-large-vurbo`)
+- `glm` - GLM (智谱) ASR (default: `glm-asr-2512`)
+- `custom` - Custom ASR endpoint (URI and model required)
+
+**Note:** The `platform` field sent to the device is always `"whisper"`. The provider only affects default URI and model values.
+
+**Examples:**
+```bash
+# Interactive mode (recommended - select provider with pre-configured defaults)
+vibekeys asr-config
+
+# Direct configuration with URI and API key
+vibekeys asr-config --uri "https://api.groq.com/openai/v1/audio/transcriptions" --api-key gsk_xxxx --model whisper-large-vurbo
+
+# Direct configuration with API key only (uses defaults)
+vibekeys asr-config --api-key sk-xxxx
+```
+
+### WiFi Configuration
+
+Configure WiFi settings for the device:
+
+```bash
+# Interactive mode - prompts for SSID and password
+vibekeys wifi-config
+
+# Direct configuration
+vibekeys wifi-config <SSID> --pass <PASSWORD>
+
+# Open network (no password)
+vibekeys wifi-config MyNetwork
+```
+
+**Examples:**
+```bash
+# Interactive mode
+vibekeys wifi-config
+
+# Configure with password
+vibekeys wifi-config "MyWiFi-5G" --pass "mypassword"
+
+# Configure open network
+vibekeys wifi-config "PublicWiFi"
+```
+
 ### Hook Mode (for Claude Code / Codex integration)
 
-Reads hook JSON events from stdin and forwards to the keyboard display:
+Reads hook JSON events from stdin and forwards them to the keyboard display:
 
 ```bash
 # For Claude Code (alias: hook)
@@ -91,42 +151,6 @@ vibekeys claude
 
 # For Codex
 vibekeys codex
-```
-
-### ASR Configuration
-
-Configure the ASR (Automatic Speech Recognition) service for voice features:
-
-```bash
-# Interactive setup - prompts for platform and API key
-vibekeys setup
-
-# Direct configuration with parameters
-vibekeys setup --platform <PLATFORM> --api-key <KEY>
-
-# Short form
-vibekeys setup -p <PLATFORM> --api-key <KEY>
-```
-
-**Supported platforms:**
-- `OpenAI` - OpenAI Whisper (default: `whisper-1`)
-- `ByteFuture` - ByteFuture Groq Whisper
-- `Groq` - Groq Whisper (fast, free tier available)
-- `GLM` - GLM (智谱) ASR
-- `Custom` - Custom ASR endpoint
-
-Configuration is saved to `~/.vibekeys/config.toml`.
-
-**Examples:**
-```bash
-# Configure Groq (fast, often has free tier)
-vibekeys setup --platform Groq --api-key gsk_xxxx
-
-# Configure OpenAI
-vibekeys setup -p OpenAI --api-key sk-xxxx
-
-# Interactive mode - will prompt for platform and API key
-vibekeys setup
 ```
 
 ## Supported Keys
@@ -210,4 +234,42 @@ vibekeys keymap CUSTOM Option+Tab
 
 # User: "Map ACCEPT to F5"
 vibekeys keymap ACCEPT F5
+
+# User: "Configure ASR with Groq"
+vibekeys asr-config
+
+# User: "Configure WiFi"
+vibekeys wifi-config
 ```
+
+## HTTP API
+
+When the server is running, you can also use HTTP endpoints:
+
+```bash
+# Send text
+curl -X POST http://127.0.0.1:42837/send -d "Hello"
+
+# Configure keymap
+curl -X POST http://127.0.0.1:42837/keymap -d '{"KEY":"value"}'
+
+# Configure ASR
+curl -X POST http://127.0.0.1:42837/asr-config -d '{
+  "platform": "whisper",
+  "uri": "https://api.openai.com/v1/audio/transcriptions",
+  "api_key": "sk-xxxx",
+  "model": "whisper-1"
+}'
+
+# Configure WiFi
+curl -X POST http://127.0.0.1:42837/wifi-config -d '{
+  "ssid": "MyWiFi",
+  "pass": "password"
+}'
+```
+
+## ASR Result Handling
+
+When the device sends ASR transcription results via BLE notifications:
+- The text is automatically copied to your clipboard
+- An acknowledgement is sent back to the device

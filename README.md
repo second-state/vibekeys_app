@@ -1,6 +1,6 @@
 # VibeKeys
 
-A BLE CLI tool for controlling the [VibeKeys MAX](https://github.com/L-jasmine/vibekeys) keyboard device. Connects via Bluetooth Low Energy (BLE) to send text and keymap configurations.
+A BLE CLI tool for controlling the [VibeKeys MAX](https://github.com/L-jasmine/vibekeys) keyboard device. Connects via Bluetooth Low Energy (BLE) to send text, keymap configurations, ASR settings, and WiFi settings.
 
 [中文文档](docs/README.zh.md)
 
@@ -59,11 +59,11 @@ claude plugin install vibekeys@second-state-tools
 
 ### Server Mode
 
-VibeKeys runs as a background daemon server. The first command starts the server, and subsequent commands communicate with it.
+VibeKeys runs as a background server. Commands automatically start the server if it's not running, or communicate with the existing server instance.
 
 ```bash
-# Start the server (runs in background)
-vibekeys
+# Start the server explicitly
+vibekeys start
 
 # Stop the server
 vibekeys stop
@@ -203,7 +203,7 @@ vibekeys codex
 | Event | Display |
 |-------|---------|
 | `UserPromptSubmit` | `[user] <first 80 chars of prompt>` |
-| `Stop` | `[stopped]` |
+| `Stop` | `[stopped]` or `[done] <last message>` |
 | `Notification` | `[notify] <first 80 chars of message>` |
 | `PreToolUse` | `[tool] <tool name>` |
 | `PostToolUse` | `[done] <tool name>` |
@@ -241,40 +241,113 @@ Add to `.claude/settings.json`:
 Configure the ASR (Automatic Speech Recognition) service for voice features:
 
 ```bash
-# Interactive setup - prompts for platform and API key
-vibekeys setup
+# Interactive mode - prompts for provider selection and API key
+vibekeys asr-config
 
-# Direct configuration with parameters
-vibekeys setup --platform <PLATFORM> --api-key <KEY>
+# Direct configuration
+vibekeys asr-config --uri <URI> --api-key <KEY> --model <MODEL>
 
-# Short form
-vibekeys setup -p <PLATFORM> --api-key <KEY>
+# Example with OpenAI
+vibekeys asr-config --uri "https://api.openai.com/v1/audio/transcriptions" --api-key sk-xxxx --model whisper-1
 ```
 
-### Supported Platforms
+### Supported Providers (for interactive mode)
 
-| Platform | Description | Model |
-|----------|-------------|-------|
-| `OpenAI` | OpenAI Whisper | `whisper-1` |
-| `ByteFuture` | ByteFuture Groq Whisper | `groq/whisper-large-v3` |
-| `Groq` | Groq Whisper (fast, free tier available) | `whisper-large-v3-turbo` |
-| `GLM` | GLM (智谱) ASR | `glm-asr-2512` |
-| `Custom` | Custom ASR endpoint | - |
+| Provider | Default URI | Default Model |
+|----------|-------------|---------------|
+| `openai` | `https://api.openai.com/v1/audio/transcriptions` | `whisper-1` |
+| `bytefuture` | `https://models.bytefuture.ai/v1/audio/transcriptions` | `groq/whisper-large-v3` |
+| `groq` | `https://api.groq.com/openai/v1/audio/transcriptions` | `whisper-large-vurbo` |
+| `glm` | `https://open.bigmodel.cn/api/paas/v4/audio/transcriptions` | `glm-asr-2512` |
+| `custom` | (required) | (required) |
 
-Configuration is saved to `~/.vibekeys/config.toml`.
+**Note:** The `platform` field sent to the device is always `"whisper"`. The provider selection in interactive mode only affects the default URI and model values for convenience.
 
 ### Examples
 
 ```bash
-# Configure Groq (fast, often has free tier)
-vibekeys setup --platform Groq --api-key gsk_xxxx
+# Interactive mode (recommended) - select from provider list with pre-configured defaults
+vibekeys asr-config
 
-# Configure OpenAI
-vibekeys setup -p OpenAI --api-key sk-xxxx
+# Configure with Groq (fast, often has free tier)
+vibekeys asr-config --uri "https://api.groq.com/openai/v1/audio/transcriptions" --api-key gsk_xxxx --model whisper-large-vurbo
 
-# Interactive mode - will prompt for platform and API key
-vibekeys setup
+# Configure with OpenAI (specify URI and model explicitly)
+vibekeys asr-config --uri "https://api.openai.com/v1/audio/transcriptions" --api-key sk-xxxx --model whisper-1
 ```
+
+## WiFi Configuration
+
+Configure WiFi settings for the device:
+
+```bash
+# Interactive mode - prompts for SSID and password
+vibekeys wifi-config
+
+# Direct configuration
+vibekeys wifi-config <SSID> --pass <PASSWORD>
+
+# Open network (no password)
+vibekeys wifi-config MyNetwork
+```
+
+### Examples
+
+```bash
+# Interactive mode
+vibekeys wifi-config
+
+# Configure with password
+vibekeys wifi-config "MyWiFi-5G" --pass "mypassword"
+
+# Configure open network
+vibekeys wifi-config "PublicWiFi"
+```
+
+## HTTP API
+
+When the server is running, you can also use HTTP endpoints:
+
+```bash
+# Send text
+curl -X POST http://127.0.0.1:42837/send -d "Hello"
+
+# Configure keymap
+curl -X POST http://127.0.0.1:42837/keymap -d '{"KEY":"value"}'
+
+# Configure ASR
+curl -X POST http://127.0.0.1:42837/asr-config -d '{
+  "platform": "whisper",
+  "uri": "https://api.openai.com/v1/audio/transcriptions",
+  "api_key": "sk-xxxx",
+  "model": "whisper-1"
+}'
+
+# Configure WiFi
+curl -X POST http://127.0.0.1:42837/wifi-config -d '{
+  "ssid": "MyWiFi",
+  "pass": "password"
+}'
+```
+
+## ASR Result Handling
+
+When the device sends ASR transcription results via BLE notifications:
+- The text is automatically copied to your clipboard
+- An acknowledgement is sent back to the device
+
+## Logs
+
+VibeKeys stores log files in the following locations:
+
+- **Linux/macOS**: `~/.vibekeys/logs/`
+- **Windows**: `%USERPROFILE%\.vibekeys\logs` (usually `C:\Users\<Username>\.vibekeys\logs`)
+
+Logs are automatically rotated:
+- Maximum 10MB per file
+- Keeps the 5 most recent log files
+
+You can also view logs in real-time on stderr. Set the log level with the `RUST_LOG` environment variable.
 
 ## Development
 

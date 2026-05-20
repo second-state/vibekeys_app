@@ -7,12 +7,10 @@ use axum::{
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
-use std::fs;
-use std::io::{self, Read, Write as IoWrite};
+use std::io::{self, Read};
 use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 
-const APP_NAME: &str = "vibekeys";
 const DEFAULT_PORT: u16 = 42837;
 
 use anyhow;
@@ -88,34 +86,6 @@ fn get_port() -> u16 {
         .unwrap_or(DEFAULT_PORT)
 }
 
-// ===== Logging =====
-
-fn log_message(msg: &str) {
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let line = format!("[{}] {} {}\n", ts, APP_NAME, msg);
-    #[cfg(unix)]
-    if let Ok(mut f) = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/vibekeys.log")
-    {
-        let _ = f.write_all(line.as_bytes());
-    }
-    #[cfg(windows)]
-    {
-        let p = std::env::var("LOCALAPPDATA")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("vibekeys.log");
-        if let Ok(mut f) = fs::OpenOptions::new().create(true).append(true).open(p) {
-            let _ = f.write_all(line.as_bytes());
-        }
-    }
-}
-
 // ===== HTTP Client =====
 
 fn check_server(port: u16) -> bool {
@@ -188,7 +158,7 @@ async fn connect_and_discover(p: &PlatformPeripheral) -> anyhow::Result<()> {
     for c in p.characteristics() {
         if c.uuid == KEYMAP_ASR_RESULT_ID {
             p.subscribe(&c).await?;
-            log_message("Subscribed to ASR result notifications");
+            log::info!("Subscribed to ASR result notifications");
             break;
         }
     }
@@ -227,9 +197,9 @@ async fn write_asr_acknowledge(
         .write(asr_char, &[PASTE_CODE], WriteType::WithResponse)
         .await
     {
-        log_message(&format!("Failed to write ASR acknowledge: {}", e));
+        log::error!("Failed to write ASR acknowledge: {}", e);
     } else {
-        log_message("ASR acknowledge sent");
+        log::info!("ASR acknowledge sent");
     }
 }
 
@@ -250,7 +220,7 @@ fn set_to_clipboard(text: &str) {
 async fn handle_asr_notifications(
     peripheral: &PlatformPeripheral,
 ) -> Option<(btleplug::api::Characteristic, String)> {
-    log_message("ASR notification handler started");
+    log::info!("ASR notification handler started");
 
     // Find the ASR result characteristic
     let asr_char = peripheral
@@ -308,26 +278,26 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
             Some(p) => !p.is_connected().await.unwrap_or(false),
         };
         if need_connect {
-            log_message("Scanning for BLE device...");
+            log::info!("Scanning for BLE device...");
             match try_ble_connect().await {
                 Ok(p) => {
-                    log_message("BLE device connected");
+                    log::info!("BLE device connected");
                     peripheral = Some(p);
                     first_connect_deadline = None; // Connected, clear deadline
                 }
                 Err(e) => {
                     // If we were connected before and lost connection, exit
                     if peripheral.is_some() {
-                        log_message(&format!("BLE disconnected: {}", e));
+                        log::error!("BLE disconnected: {}", e);
                         return;
                     }
                     // First connection attempt - check deadline
                     if let Some(deadline) = first_connect_deadline {
                         if tokio::time::Instant::now() > deadline {
-                            log_message("First connection timeout, exiting");
+                            log::warn!("First connection timeout, exiting");
                             return;
                         }
-                        log_message(&format!("BLE scan failed: {}, retrying", e));
+                        log::warn!("BLE scan failed: {}, retrying", e);
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     } else {
                         // Should not happen
@@ -344,7 +314,7 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                     reply,
                 })) => {
                     // Check connection before sending with 1s timeout
-                    log_message("check connect status");
+                    log::info!("check connect status");
                     let connected =
                         tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
                             .await
@@ -352,18 +322,18 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                             .unwrap_or(false);
 
                     if !connected {
-                        log_message("BLE disconnected before send, exiting");
+                        log::error!("BLE disconnected before send, exiting");
                         let _ = reply.send(Err("BLE disconnected".to_string()));
                         return;
                     }
 
-                    log_message("start send");
+                    log::info!("start send");
                     let result = send_ble(p, char_uuid, &data).await;
-                    log_message("send end");
+                    log::info!("send end");
                     let _ = reply.send(result.map_err(|e| e.to_string()));
                 }
                 Some(SelectResult::AsrResult(asr_char, text)) => {
-                    log_message(&format!("ASR result received: {}", text));
+                    log::info!("ASR result received: {}", text);
                     set_to_clipboard(&text);
                     write_asr_acknowledge(p, &asr_char).await;
                 }
@@ -416,7 +386,7 @@ async fn root_handler(State(_): State<Arc<AppState>>) -> String {
 }
 
 async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
-    log_message("Shutdown requested");
+    log::info!("Shutdown requested");
     let tx = state.shutdown_tx.lock().await.take();
     if let Some(tx) = tx {
         let _ = tx.send(());
@@ -428,7 +398,7 @@ async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> Strin
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     if result.contains("disconnected") {
-        log_message("BLE disconnected, shutting down server");
+        log::error!("BLE disconnected, shutting down server");
         let tx = state.shutdown_tx.lock().await.take();
         if let Some(tx) = tx {
             let _ = tx.send(());
@@ -441,7 +411,7 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
     let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     if result.contains("disconnected") {
-        log_message("BLE disconnected, shutting down server");
+        log::error!("BLE disconnected, shutting down server");
         let tx = state.shutdown_tx.lock().await.take();
         if let Some(tx) = tx {
             let _ = tx.send(());
@@ -454,7 +424,7 @@ async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) ->
     let result = ble_send(&state.ble_tx, KEYMAP_ASR_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     if result.contains("disconnected") {
-        log_message("BLE disconnected, shutting down server");
+        log::error!("BLE disconnected, shutting down server");
         let tx = state.shutdown_tx.lock().await.take();
         if let Some(tx) = tx {
             let _ = tx.send(());
@@ -483,7 +453,7 @@ async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -
 
         // If BLE disconnected, shut down the server
         if results.iter().any(|r| r.contains("disconnected")) {
-            log_message("BLE disconnected, shutting down server");
+            log::error!("BLE disconnected, shutting down server");
             let tx = state.shutdown_tx.lock().await.take();
             if let Some(tx) = tx {
                 let _ = tx.send(());
@@ -502,7 +472,7 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
 
     if let Some(ble_cmd) = initial_cmd.map(command_to_blecmd).flatten() {
         if ble_tx.send(ble_cmd).await.is_err() {
-            log_message("Failed to send initial command to BLE task");
+            log::error!("Failed to send initial command to BLE task");
         }
     }
 
@@ -525,8 +495,7 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
 
     let addr = format!("127.0.0.1:{}", port);
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    log_message(&format!("Listening on {}", addr));
-    println!("vibekeys server started on port {}", port);
+    log::info!("Listening on {}", addr);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
@@ -535,7 +504,7 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
         .await
         .unwrap();
 
-    log_message("Server stopped");
+    log::info!("Server stopped");
 }
 
 // ===== Command Forwarding =====
@@ -1147,8 +1116,48 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
 
 // ===== Main =====
 
+fn init_logger() {
+    // Get log directory: ~/.vibekeys/logs
+    let log_dir = dirs::home_dir()
+        .map(|p| p.join(".vibekeys").join("logs"))
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // Create log directory if it doesn't exist
+    if let Err(e) = std::fs::create_dir_all(&log_dir) {
+        eprintln!("Failed to create log directory {:?}: {}", log_dir, e);
+        // Fall back to env_logger behavior (stderr only)
+        env_logger::init();
+        return;
+    }
+
+    // Initialize flexi_logger
+    if let Err(e) = flexi_logger::Logger::try_with_env_or_str("info")
+        .map(|logger| {
+            logger
+                .log_to_file(
+                    flexi_logger::FileSpec::default()
+                        .directory(&log_dir)
+                        .basename("vibekeys")
+                        .suppress_timestamp(),
+                )
+                .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+                .rotate(
+                    flexi_logger::Criterion::Size(10_000_000), // 10MB
+                    flexi_logger::Naming::Timestamps,
+                    flexi_logger::Cleanup::KeepLogFiles(5),
+                )
+                .duplicate_to_stderr(flexi_logger::Duplicate::All)
+                .format_for_stderr(flexi_logger::default_format)
+        })
+        .and_then(|logger| logger.start())
+    {
+        eprintln!("Failed to initialize logger: {}, falling back to stderr", e);
+        env_logger::init();
+    }
+}
+
 fn main() {
-    env_logger::init();
+    init_logger();
     let cli = Cli::parse();
     let port = get_port();
 
