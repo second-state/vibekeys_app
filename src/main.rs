@@ -88,17 +88,17 @@ fn get_port() -> u16 {
 
 // ===== HTTP Client =====
 
-fn check_server(port: u16) -> bool {
+async fn check_server(port: u16) -> bool {
     let url = format!("http://127.0.0.1:{}/health", port);
 
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(1))
         .no_proxy()
         .build();
 
     if let Ok(client) = client {
-        if let Ok(resp) = client.get(&url).send() {
-            if let Ok(text) = resp.text() {
+        if let Ok(resp) = client.get(&url).send().await {
+            if let Ok(text) = resp.text().await {
                 return text.trim() == "ok";
             }
         }
@@ -1146,7 +1146,7 @@ fn init_logger() {
                     flexi_logger::Naming::Timestamps,
                     flexi_logger::Cleanup::KeepLogFiles(5),
                 )
-                .duplicate_to_stderr(flexi_logger::Duplicate::All)
+                .duplicate_to_stdout(flexi_logger::Duplicate::All)
                 .format_for_stderr(flexi_logger::default_format)
         })
         .and_then(|logger| logger.start())
@@ -1156,48 +1156,38 @@ fn init_logger() {
     }
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     init_logger();
     let cli = Cli::parse();
     let port = get_port();
 
     // Handle stop
     if matches!(cli.command, Command::Stop) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(async {
-            let url = format!("http://127.0.0.1:{}/shutdown", port);
-            let client = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .no_proxy()
-                .build();
+        let url = format!("http://127.0.0.1:{}/shutdown", port);
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .no_proxy()
+            .build();
 
-            if let Ok(client) = client {
-                match client.get(&url).send().await {
-                    Ok(_) => println!("Server stopped"),
-                    Err(_) => eprintln!("Server not running"),
-                }
-            } else {
-                eprintln!("Server not running");
+        if let Ok(client) = client {
+            match client.get(&url).send().await {
+                Ok(_) => log::info!("Server stopped"),
+                Err(_) => log::error!("Server not running"),
             }
-        });
+        } else {
+            log::error!("Server not running");
+        }
         return;
     }
 
     // Handle start
     if matches!(cli.command, Command::Start) {
-        if check_server(port) {
-            println!("vibekeys server already running on port {}", port);
+        if check_server(port).await {
+            log::info!("vibekeys server already running on port {}", port);
             return;
         }
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(run_server(port, None));
+        run_server(port, None).await;
         return;
     }
 
@@ -1211,20 +1201,10 @@ fn main() {
                     api_key.as_deref(),
                     model.as_deref(),
                 );
-                let server_running = check_server(port);
-                if server_running {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(send_asr_config(port, &config));
-                    return;
+                if check_server(port).await {
+                    send_asr_config(port, &config).await;
                 } else {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(run_server(
+                    run_server(
                         port,
                         Some(Command::AsrConfig {
                             platform: Some(platform),
@@ -1232,67 +1212,47 @@ fn main() {
                             api_key,
                             model,
                         }),
-                    ));
-                    return;
+                    )
+                    .await;
                 }
             }
             Err(e) => {
-                eprintln!("ASR config failed: {}", e);
+                log::error!("ASR config failed: {}", e);
                 std::process::exit(1);
             }
         }
+        return;
     }
 
     // Handle interactive WiFi config
     if matches!(cli.command, Command::WifiConfig { ssid: None, .. }) {
         match interactive_wifi_config() {
             Ok((ssid, pass)) => {
-                let server_running = check_server(port);
-                if server_running {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(send_wifi_config(port, &ssid, pass.as_deref()));
-                    return;
+                if check_server(port).await {
+                    send_wifi_config(port, &ssid, pass.as_deref()).await;
                 } else {
-                    let rt = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .unwrap();
-                    rt.block_on(run_server(
+                    run_server(
                         port,
                         Some(Command::WifiConfig {
                             ssid: Some(ssid),
                             pass,
                         }),
-                    ));
-                    return;
+                    )
+                    .await;
                 }
             }
             Err(e) => {
-                eprintln!("WiFi config failed: {}", e);
+                log::error!("WiFi config failed: {}", e);
                 std::process::exit(1);
             }
         }
-    }
-
-    // Other commands: check if server is already running, if not start it
-
-    let server_running = check_server(port);
-
-    if server_running {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        rt.block_on(forward_command(port, &cli.command));
         return;
     }
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    rt.block_on(run_server(port, Some(cli.command)));
+    // Other commands: check if server is already running, if not start it
+    if check_server(port).await {
+        forward_command(port, &cli.command).await;
+    } else {
+        run_server(port, Some(cli.command)).await;
+    }
 }
