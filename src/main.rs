@@ -184,6 +184,11 @@ enum BleCmd {
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    WifiConfig {
+        ssid: String,
+        pass: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 /// Write acknowledge (1u8) to ASR result characteristic
@@ -333,6 +338,39 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                     log::info!("start send");
                     let result = send_ble(p, char_uuid, &data).await;
                     log::info!("send end");
+                    let _ = reply.send(result.map_err(|e| e.to_string()));
+                }
+                Some(SelectResult::BleCmd(BleCmd::WifiConfig {
+                    ssid,
+                    pass,
+                    reply,
+                })) => {
+                    // Check connection before sending with 1s timeout
+                    let connected =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
+                            .await
+                            .unwrap_or(Ok(false))
+                            .unwrap_or(false);
+
+                    if !connected {
+                        log::error!("BLE disconnected before send, exiting");
+                        let _ = reply.send(Err("BLE disconnected".to_string()));
+                        return;
+                    }
+
+                    // Send SSID first
+                    let ssid_result = send_ble(p, WIFI_SSID_ID, ssid.as_bytes()).await;
+                    if ssid_result.is_err() {
+                        let _ = reply.send(ssid_result.map_err(|e| e.to_string()));
+                        continue;
+                    }
+
+                    // Then send password if provided
+                    let result = if let Some(password) = pass {
+                        send_ble(p, WIFI_PASS_ID, password.as_bytes()).await
+                    } else {
+                        Ok(())
+                    };
                     let _ = reply.send(result.map_err(|e| e.to_string()));
                 }
                 Some(SelectResult::AsrResult(asr_char, text)) => {
@@ -648,12 +686,12 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
                 None // Interactive mode handled in main()
             }
         }
-        Command::WifiConfig { ssid, pass: _ } => {
+        Command::WifiConfig { ssid, pass } => {
             if let Some(s) = ssid {
                 let (tx, _) = oneshot::channel();
-                Some(BleCmd::Send {
-                    char_uuid: WIFI_SSID_ID,
-                    data: s.into_bytes(),
+                Some(BleCmd::WifiConfig {
+                    ssid: s,
+                    pass,
                     reply: tx,
                 })
             } else {
