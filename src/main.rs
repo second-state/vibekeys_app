@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use std::io::{self, Read};
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 
 const DEFAULT_PORT: u16 = 42837;
 
@@ -262,6 +262,17 @@ enum SelectResult {
     AsrResult(btleplug::api::Characteristic, String),
 }
 
+async fn loop_check_connection(peripheral: &PlatformPeripheral) {
+    loop {
+        if !check_connected(peripheral).await {
+            log::info!("BLE disconnected, exiting BLE task");
+            return;
+        } else {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    }
+}
+
 async fn select_rx_and_notify(
     rx: &mut mpsc::Receiver<BleCmd>,
     peripheral: &PlatformPeripheral,
@@ -273,113 +284,93 @@ async fn select_rx_and_notify(
         asr_result = handle_asr_notifications(peripheral) => {
             asr_result.map(|res| SelectResult::AsrResult(res.0, res.1))
         }
+        _ = loop_check_connection(peripheral) => {
+            None
+        }
+    }
+}
+
+async fn check_connected(peripheral: &PlatformPeripheral) -> bool {
+    let r = tokio::time::timeout(std::time::Duration::from_secs(1), peripheral.is_connected())
+        .await
+        .unwrap_or(Ok(false));
+
+    match r {
+        Ok(connected) => connected,
+        Err(_) => {
+            log::warn!("Connection check timed out");
+            false
+        }
     }
 }
 
 async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
-    let mut peripheral: Option<PlatformPeripheral> = None;
-    let mut first_connect_deadline =
-        Some(tokio::time::Instant::now() + std::time::Duration::from_secs(10));
-    loop {
-        let need_connect = match &peripheral {
-            None => true,
-            Some(p) => !p.is_connected().await.unwrap_or(false),
-        };
-        if need_connect {
-            log::info!("Scanning for BLE device...");
-            match try_ble_connect().await {
-                Ok(p) => {
-                    log::info!("BLE device connected");
-                    peripheral = Some(p);
-                    first_connect_deadline = None; // Connected, clear deadline
-                }
-                Err(e) => {
-                    // If we were connected before and lost connection, exit
-                    if peripheral.is_some() {
-                        log::error!("BLE disconnected: {}", e);
-                        return;
-                    }
-                    // First connection attempt - check deadline
-                    if let Some(deadline) = first_connect_deadline {
-                        if tokio::time::Instant::now() > deadline {
-                            log::warn!("First connection timeout, exiting");
-                            return;
-                        }
-                        log::warn!("BLE scan failed: {}, retrying", e);
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    } else {
-                        // Should not happen
-                        return;
-                    }
-                }
-            }
+    // Initial connection with timeout
+    log::info!("Scanning for BLE device...");
+    let peripheral = match try_ble_connect().await {
+        Ok(p) => {
+            log::info!("BLE device connected");
+            p
         }
-        if let Some(ref p) = peripheral {
-            match select_rx_and_notify(&mut rx, p).await {
-                Some(SelectResult::BleCmd(BleCmd::Send {
-                    char_uuid,
-                    data,
-                    reply,
-                })) => {
-                    // Check connection before sending with 1s timeout
-                    log::info!("check connect status");
-                    let connected =
-                        tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
-                            .await
-                            .unwrap_or(Ok(false))
-                            .unwrap_or(false);
+        Err(e) => {
+            log::error!("BLE connection failed: {}", e);
+            return;
+        }
+    };
 
-                    if !connected {
-                        log::error!("BLE disconnected before send, exiting");
-                        let _ = reply.send(Err("BLE disconnected".to_string()));
-                        return;
-                    }
+    loop {
+        match select_rx_and_notify(&mut rx, &peripheral).await {
+            Some(SelectResult::BleCmd(BleCmd::Send {
+                char_uuid,
+                data,
+                reply,
+            })) => {
+                // Check connection before sending with 1s timeout
+                log::info!("check connect status");
+                let connected = check_connected(&peripheral).await;
 
-                    log::info!("start send");
-                    let result = send_ble(p, char_uuid, &data).await;
-                    log::info!("send end");
-                    let _ = reply.send(result.map_err(|e| e.to_string()));
+                if !connected {
+                    log::error!("BLE disconnected before send, exiting");
+                    let _ = reply.send(Err("BLE disconnected".to_string()));
+                    return;
                 }
-                Some(SelectResult::BleCmd(BleCmd::WifiConfig {
-                    ssid,
-                    pass,
-                    reply,
-                })) => {
-                    // Check connection before sending with 1s timeout
-                    let connected =
-                        tokio::time::timeout(std::time::Duration::from_secs(1), p.is_connected())
-                            .await
-                            .unwrap_or(Ok(false))
-                            .unwrap_or(false);
 
-                    if !connected {
-                        log::error!("BLE disconnected before send, exiting");
-                        let _ = reply.send(Err("BLE disconnected".to_string()));
-                        return;
-                    }
-
-                    // Send SSID first
-                    let ssid_result = send_ble(p, WIFI_SSID_ID, ssid.as_bytes()).await;
-                    if ssid_result.is_err() {
-                        let _ = reply.send(ssid_result.map_err(|e| e.to_string()));
-                        continue;
-                    }
-
-                    // Then send password if provided
-                    let result = if let Some(password) = pass {
-                        send_ble(p, WIFI_PASS_ID, password.as_bytes()).await
-                    } else {
-                        Ok(())
-                    };
-                    let _ = reply.send(result.map_err(|e| e.to_string()));
-                }
-                Some(SelectResult::AsrResult(asr_char, text)) => {
-                    log::info!("ASR result received: {}", text);
-                    set_to_clipboard(&text);
-                    write_asr_acknowledge(p, &asr_char).await;
-                }
-                None => return,
+                log::info!("start send");
+                let result = send_ble(&peripheral, char_uuid, &data).await;
+                log::info!("send end");
+                let _ = reply.send(result.map_err(|e| e.to_string()));
             }
+            Some(SelectResult::BleCmd(BleCmd::WifiConfig { ssid, pass, reply })) => {
+                // Check connection before sending with 1s timeout
+                let connected = check_connected(&peripheral).await;
+
+                if !connected {
+                    log::error!("BLE disconnected before send, exiting");
+                    let _ = reply.send(Err("BLE disconnected".to_string()));
+                    return;
+                }
+
+                // Send SSID first
+                let ssid_result = send_ble(&peripheral, WIFI_SSID_ID, ssid.as_bytes()).await;
+                if ssid_result.is_err() {
+                    let _ = reply.send(ssid_result.map_err(|e| e.to_string()));
+                    continue;
+                }
+
+                // Then send password if provided
+                let result = if let Some(password) = pass {
+                    send_ble(&peripheral, WIFI_PASS_ID, password.as_bytes()).await
+                } else {
+                    Ok(())
+                };
+                let _ = reply.send(result.map_err(|e| e.to_string()));
+            }
+            Some(SelectResult::AsrResult(asr_char, text)) => {
+                log::info!("ASR result received: {}", text);
+                set_to_clipboard(&text);
+                write_asr_acknowledge(&peripheral, &asr_char).await;
+            }
+            None => return,
         }
     }
 }
@@ -391,7 +382,11 @@ async fn try_ble_connect() -> anyhow::Result<PlatformPeripheral> {
     Ok(p)
 }
 
-async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -> String {
+async fn ble_send(
+    ble_tx: &mpsc::Sender<BleCmd>,
+    char_uuid: Uuid,
+    data: &[u8],
+) -> anyhow::Result<String> {
     let (tx, rx) = oneshot::channel();
     if ble_tx
         .send(BleCmd::Send {
@@ -402,12 +397,12 @@ async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -
         .await
         .is_err()
     {
-        return "error: BLE not available\n".to_string();
+        anyhow::bail!("Failed to send BLE command");
     }
     match rx.await {
-        Ok(Ok(())) => "ok\n".to_string(),
-        Ok(Err(e)) => format!("error: {}\n", e),
-        Err(_) => "error: no response\n".to_string(),
+        Ok(Ok(())) => Ok("ok\n".to_string()),
+        Ok(Err(e)) => Err(anyhow::anyhow!("error: {}", e)),
+        Err(_) => Err(anyhow::anyhow!("error: no response")),
     }
 }
 
@@ -415,7 +410,7 @@ async fn ble_send(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid, data: &[u8]) -
 
 struct AppState {
     ble_tx: mpsc::Sender<BleCmd>,
-    shutdown_tx: Mutex<Option<oneshot::Sender<()>>>,
+    shutdown_tx: Arc<tokio::sync::Notify>,
 }
 
 async fn health_handler() -> &'static str {
@@ -428,50 +423,47 @@ async fn root_handler(State(_): State<Arc<AppState>>) -> String {
 
 async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
     log::info!("Shutdown requested");
-    let tx = state.shutdown_tx.lock().await.take();
-    if let Some(tx) = tx {
-        let _ = tx.send(());
-    }
+    state.shutdown_tx.notify_waiters();
     "shutting down\n".to_string()
 }
 
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
-    if result.contains("disconnected") {
-        log::error!("BLE disconnected, shutting down server");
-        let tx = state.shutdown_tx.lock().await.take();
-        if let Some(tx) = tx {
-            let _ = tx.send(());
+    match result {
+        Ok(result) => result,
+        Err(e) => {
+            log::error!("BLE disconnected: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
         }
     }
-    result
 }
 
 async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
-    if result.contains("disconnected") {
-        log::error!("BLE disconnected, shutting down server");
-        let tx = state.shutdown_tx.lock().await.take();
-        if let Some(tx) = tx {
-            let _ = tx.send(());
+    match result {
+        Ok(result) => result,
+        Err(e) => {
+            log::error!("BLE disconnected: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
         }
     }
-    result
 }
 
 async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     let result = ble_send(&state.ble_tx, KEYMAP_ASR_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
-    if result.contains("disconnected") {
-        log::error!("BLE disconnected, shutting down server");
-        let tx = state.shutdown_tx.lock().await.take();
-        if let Some(tx) = tx {
-            let _ = tx.send(());
+    match result {
+        Ok(result) => result,
+        Err(e) => {
+            log::error!("BLE disconnected: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
         }
     }
-    result
 }
 
 async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
@@ -484,24 +476,33 @@ async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -
 
         // Send SSID first
         if let Some(s) = ssid {
-            results.push(ble_send(&state.ble_tx, WIFI_SSID_ID, s.as_bytes()).await);
+            let result = ble_send(&state.ble_tx, WIFI_SSID_ID, s.as_bytes()).await;
+            let r_string = match result {
+                Ok(result) => result,
+                Err(e) => {
+                    log::error!("BLE disconnected: {}", e);
+                    state.shutdown_tx.notify_waiters();
+                    format!("error: {}\n", e)
+                }
+            };
+            results.push(r_string);
         }
 
         // Then send password
         if let Some(p) = pass {
-            results.push(ble_send(&state.ble_tx, WIFI_PASS_ID, p.as_bytes()).await);
+            let result = ble_send(&state.ble_tx, WIFI_PASS_ID, p.as_bytes()).await;
+            let r_string = match result {
+                Ok(result) => result,
+                Err(e) => {
+                    log::error!("BLE disconnected: {}", e);
+                    state.shutdown_tx.notify_waiters();
+                    format!("error: {}\n", e)
+                }
+            };
+            results.push(r_string);
         }
 
-        // If BLE disconnected, shut down the server
-        if results.iter().any(|r| r.contains("disconnected")) {
-            log::error!("BLE disconnected, shutting down server");
-            let tx = state.shutdown_tx.lock().await.take();
-            if let Some(tx) = tx {
-                let _ = tx.send(());
-            }
-        }
-
-        results.join("\n")
+        results.join(",")
     } else {
         "error: invalid JSON format, expected {\"ssid\": \"...\", \"pass\": \"...\"}\n".to_string()
     }
@@ -509,7 +510,7 @@ async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -
 
 async fn run_server(port: u16, initial_cmd: Option<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let notify = Arc::new(tokio::sync::Notify::new());
 
     if let Some(ble_cmd) = initial_cmd.map(command_to_blecmd).flatten() {
         if ble_tx.send(ble_cmd).await.is_err() {
@@ -519,10 +520,15 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
 
     let state = Arc::new(AppState {
         ble_tx,
-        shutdown_tx: Mutex::new(Some(shutdown_tx)),
+        shutdown_tx: notify.clone(),
     });
 
-    tokio::spawn(ble_task(ble_rx));
+    let notify_ = notify.clone();
+    tokio::spawn(async move {
+        ble_task(ble_rx).await;
+        log::warn!("BLE task ended, shutting down server");
+        notify_.notify_waiters();
+    });
 
     let app = Router::new()
         .route("/", get(root_handler))
@@ -540,7 +546,7 @@ async fn run_server(port: u16, initial_cmd: Option<Command>) {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
-            let _ = shutdown_rx.await;
+            notify.notified_owned().await;
         })
         .await
         .unwrap();
@@ -1259,7 +1265,14 @@ async fn main() {
     }
 
     // Handle interactive ASR config
-    if matches!(cli.command, Command::AsrConfig { platform: None, clean: false, .. }) {
+    if matches!(
+        cli.command,
+        Command::AsrConfig {
+            platform: None,
+            clean: false,
+            ..
+        }
+    ) {
         match interactive_asr_config() {
             Ok((platform, uri, api_key, model)) => {
                 let config = build_asr_config(
