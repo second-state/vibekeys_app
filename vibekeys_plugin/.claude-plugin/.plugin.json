@@ -1,7 +1,7 @@
 {
     "name": "vibekeys",
     "description": "VibeKeys BLE controller - sends messages/status to BLE keyboard",
-    "version": "0.1.6",
+    "version": "0.1.7",
     "author": {
         "name": "csh"
     }
