@@ -69,7 +69,7 @@ Display a text message on the VibeKeys MAX screen:
 vibekeys send "Hello World"
 ```
 
-This connects to the device via BLE, sends the text, and disconnects. Takes a few seconds.
+The server connects via BLE and stays running for subsequent commands.
 
 ### Configure key mapping
 
@@ -89,8 +89,8 @@ Configure the ASR (Automatic Speech Recognition) service for voice features:
 # Interactive mode - prompts for provider selection and API key
 vibekeys asr-config
 
-# Direct configuration with provider
-vibekeys asr-config whisper --uri <URI> --api-key <KEY> --model <MODEL>
+# Direct configuration
+vibekeys asr-config --uri <URI> --api-key <KEY> --model <MODEL>
 ```
 
 **Supported providers (affects default URI and model):**
