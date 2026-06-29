@@ -1213,14 +1213,15 @@ fn init_logger() {
                         .basename("vibekeys")
                         .suppress_timestamp(),
                 )
-                .write_mode(flexi_logger::WriteMode::BufferAndFlush)
+                .write_mode(flexi_logger::WriteMode::Direct)
                 .rotate(
                     flexi_logger::Criterion::Size(10_000_000), // 10MB
-                    flexi_logger::Naming::Timestamps,
-                    flexi_logger::Cleanup::KeepLogFiles(5),
+                    flexi_logger::Naming::Numbers,
+                    flexi_logger::Cleanup::KeepForDays(5),
                 )
                 .duplicate_to_stdout(flexi_logger::Duplicate::All)
                 .format_for_stderr(flexi_logger::default_format)
+                .format_for_files(flexi_logger::detailed_format)
         })
         .and_then(|logger| logger.start())
     {
