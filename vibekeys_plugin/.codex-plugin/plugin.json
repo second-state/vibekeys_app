@@ -1,55 +1,12 @@
 {
   "name": "vibekeys",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "VibeKeys BLE controller - sends messages/status to BLE keyboard",
   "author": {
     "name": "csh"
   },
   "skills": "./skills/",
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "vibekeys codex &> /dev/null &"
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "vibekeys codex &> /dev/null &"
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "vibekeys codex &> /dev/null &"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "vibekeys codex &> /dev/null &"
-          }
-        ]
-      }
-    ]
-  },
+  "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "VibeKeys",
     "shortDescription": "Send messages and status updates to a BLE keyboard.",
