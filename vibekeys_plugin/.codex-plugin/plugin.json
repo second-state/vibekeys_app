@@ -1,0 +1,65 @@
+{
+  "name": "vibekeys",
+  "version": "0.1.7",
+  "description": "VibeKeys BLE controller - sends messages/status to BLE keyboard",
+  "author": {
+    "name": "csh"
+  },
+  "skills": "./skills/",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibekeys codex &> /dev/null &"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibekeys codex &> /dev/null &"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibekeys codex &> /dev/null &"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "vibekeys codex &> /dev/null &"
+          }
+        ]
+      }
+    ]
+  },
+  "interface": {
+    "displayName": "VibeKeys",
+    "shortDescription": "Send messages and status updates to a BLE keyboard.",
+    "longDescription": "VibeKeys provides Codex skill support for sending messages and status updates to a BLE keyboard through the local VibeKeys controller.",
+    "developerName": "csh",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": "Use VibeKeys for BLE keyboard status updates."
+  }
+}
