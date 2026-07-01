@@ -753,7 +753,10 @@ async fn forward_command(port: u16, cmd: &Command) {
             let keymaps = match profile_keymaps(name) {
                 Some(k) => k,
                 None => {
-                    eprintln!("Unknown profile: '{}'. Available profiles: claude, codex", name);
+                    eprintln!(
+                        "Unknown profile: '{}'. Available profiles: claude, codex",
+                        name
+                    );
                     return;
                 }
             };
@@ -1287,7 +1290,9 @@ mod tests {
             keymaps.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(
             keys,
-            ["CUSTOM", "YOLO"].into_iter().collect::<std::collections::HashSet<_>>()
+            ["CUSTOM", "YOLO"]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
         );
         assert_eq!(
             by_key["CUSTOM"],
@@ -1468,7 +1473,10 @@ async fn main() {
                     .map(|(key, binding)| Command::Keymap { key, binding })
                     .collect(),
                 None => {
-                    log::error!("Unknown profile: '{}'. Available profiles: claude, codex", name);
+                    log::error!(
+                        "Unknown profile: '{}'. Available profiles: claude, codex",
+                        name
+                    );
                     std::process::exit(1);
                 }
             },
