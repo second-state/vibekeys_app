@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VibeKeys MAX for Codex — one command switches your keyboard</title>
+  <meta name="description" content="VibeKeys MAX now speaks OpenAI Codex. One command reconfigures the physical keyboard — /review on a single key, one-tap approvals — and switches back to Claude Code just as fast." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #fafaf7;
+      --surface: #ffffff;
+      --surface-2: #f4f2ec;
+      --fg: #1a1916;
+      --muted: #6b6964;
+      --border: #e8e5df;
+      --accent: #c96442;
+      --accent-ink: #9c4a2f;
+      --term-bg: #211f1c;
+      --term-fg: #f4f2ec;
+      --term-green: #8fbf7f;
+      --font-display: 'Source Serif 4', 'Iowan Old Style', Charter, Georgia, serif;
+      --font-body: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body { margin: 0; font: 16px/1.55 var(--font-body); color: var(--fg); background: var(--bg); -webkit-font-smoothing: antialiased; }
+    .container { max-width: 1120px; margin: 0 auto; padding: 0 32px; }
+    .section { padding: 80px 0; }
+    .section + .section { border-top: 1px solid var(--border); }
+    a { color: inherit; }
+
+    /* Nav */
+    .topnav { position: sticky; top: 0; z-index: 20; background: color-mix(in oklch, var(--bg) 90%, transparent); border-bottom: 1px solid var(--border); backdrop-filter: blur(10px); }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; }
+    .logo { font: 700 20px/1 var(--font-display); letter-spacing: -0.01em; text-decoration: none; }
+    .logo b { color: var(--accent); }
+    .nav-links { display: flex; gap: 26px; }
+    .nav-links a { text-decoration: none; color: var(--muted); font-size: 14px; }
+    .nav-links a:hover { color: var(--fg); }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border: 1px solid transparent; border-radius: 10px; font: 600 15px/1 var(--font-body); cursor: pointer; text-decoration: none; transition: transform .12s ease, background .12s ease, box-shadow .12s ease; }
+    .btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 1px 0 rgba(0,0,0,.04); }
+    .btn-primary:hover { background: var(--accent-ink); transform: translateY(-1px); }
+    .btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
+    .btn-ghost:hover { border-color: var(--fg); }
+
+    /* Hero */
+    .eyebrow { margin: 0 0 16px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.14em; font: 700 12px/1.2 var(--font-mono); }
+    .hero { text-align: center; }
+    .hero h1 { margin: 0 auto 22px; max-width: 15ch; font: 700 clamp(42px, 6.4vw, 74px)/1.03 var(--font-display); letter-spacing: -0.025em; }
+    .hero h1 .em { color: var(--accent); font-style: italic; }
+    .lead { margin: 0 auto 34px; color: var(--muted); font-size: 20px; max-width: 52ch; }
+    .hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+
+    /* Terminal block */
+    .terminal { margin: 48px auto 0; max-width: 640px; background: var(--term-bg); border-radius: 14px; box-shadow: 0 24px 60px -30px rgba(26,25,22,.6); overflow: hidden; text-align: left; }
+    .term-bar { display: flex; align-items: center; gap: 7px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+    .term-bar i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    .term-bar i:nth-child(1){ background:#e06c5a } .term-bar i:nth-child(2){ background:#e3b341 } .term-bar i:nth-child(3){ background:#8fbf7f }
+    .term-bar span { margin-left: auto; color: rgba(244,242,236,.5); font: 11px/1 var(--font-mono); letter-spacing: .08em; }
+    .term-body { padding: 22px 22px 26px; font: 14px/1.9 var(--font-mono); color: var(--term-fg); }
+    .term-body .p { color: var(--accent); }
+    .term-body .ok { color: var(--term-green); }
+    .term-body .dim { color: rgba(244,242,236,.5); }
+
+    /* Demo */
+    .demo-head { text-align: center; max-width: 60ch; margin: 0 auto 40px; }
+    h2 { margin: 0 0 14px; font: 700 clamp(30px, 4vw, 44px)/1.08 var(--font-display); letter-spacing: -0.02em; }
+    .section-sub { color: var(--muted); font-size: 18px; margin: 0 auto; max-width: 54ch; }
+    .toggle { display: inline-flex; padding: 5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; gap: 4px; }
+    .toggle button { border: 0; background: transparent; padding: 10px 22px; border-radius: 8px; font: 600 15px/1 var(--font-body); color: var(--muted); cursor: pointer; transition: all .16s ease; }
+    .toggle button.active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+    .toggle button .dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:8px; vertical-align: middle; background: var(--accent); opacity:0; transition: opacity .16s; }
+    .toggle button.active .dot { opacity:1; }
+    .demo-toggle-wrap { text-align: center; margin-bottom: 32px; }
+
+    .demo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: stretch; }
+    .keycard { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 24px; position: relative; overflow: hidden; }
+    .keycard .cap { font: 700 11px/1 var(--font-mono); letter-spacing: .16em; text-transform: uppercase; color: var(--muted); }
+    .keycap { display: inline-flex; align-items: center; justify-content: center; margin: 16px 0 18px; min-width: 92px; height: 58px; padding: 0 16px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 4px; font: 700 15px/1 var(--font-mono); letter-spacing: .04em; }
+    .binding { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+    .binding .arrow { color: var(--accent); font-weight: 700; }
+    .binding .val { font: 600 20px/1.2 var(--font-mono); transition: color .2s ease; }
+    .binding .note { color: var(--muted); font-size: 14px; }
+    .keycard.flash { animation: flash .5s ease; }
+    @keyframes flash { 0%{ background: #fbf1ec } 100%{ background: var(--surface) } }
+
+    /* keyboard screen sim */
+    .screen-row { margin-top: 24px; display:grid; grid-template-columns: 1fr; gap: 16px; }
+    .kbd-screen { background: var(--term-bg); border-radius: 14px; padding: 22px 24px; display:flex; align-items:center; justify-content:center; min-height: 96px; text-align:center; box-shadow: inset 0 0 0 3px rgba(244,242,236,.06); }
+    .kbd-screen .msg { font: 600 20px/1.3 var(--font-mono); color: var(--term-green); }
+    .demo-cmd { text-align:center; margin-top: 20px; font: 14px/1 var(--font-mono); color: var(--muted); }
+    .demo-cmd code { color: var(--fg); background: var(--surface-2); padding: 6px 10px; border-radius: 7px; border: 1px solid var(--border); }
+
+    /* Feature table */
+    .ptable { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 15px; }
+    .ptable th, .ptable td { text-align: left; padding: 16px 18px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .ptable thead th { font: 700 12px/1 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
+    .ptable td code, .ptable th code { font-family: var(--font-mono); background: var(--surface-2); padding: 3px 7px; border-radius: 6px; font-size: 13px; }
+    .ptable tbody tr:last-child td { border-bottom: 0; }
+    .ptable .keyname { font-family: var(--font-mono); font-weight: 700; }
+
+    .cards3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 12px; }
+    .fcard { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px; }
+    .fcard .n { font: 700 13px/1 var(--font-mono); color: var(--accent); letter-spacing: .08em; }
+    .fcard h3 { margin: 14px 0 8px; font: 600 21px/1.2 var(--font-display); letter-spacing: -0.01em; }
+    .fcard p { margin: 0; color: var(--muted); font-size: 15px; }
+
+    /* Steps */
+    .steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; margin-top: 8px; }
+    .step { padding: 28px 28px 28px 0; }
+    .step + .step { border-left: 1px solid var(--border); padding-left: 28px; }
+    .step .num { font: 700 clamp(34px,4vw,44px)/1 var(--font-display); color: var(--accent); }
+    .step h3 { margin: 14px 0 8px; font: 600 19px/1.25 var(--font-display); }
+    .step p { margin: 0 0 12px; color: var(--muted); font-size: 15px; }
+    .step code { display: inline-block; font: 500 13px/1.6 var(--font-mono); background: var(--surface-2); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; color: var(--fg); }
+
+    /* FAQ */
+    .faq { max-width: 780px; margin: 0 auto; }
+    .qa { border-bottom: 1px solid var(--border); }
+    .qa summary { cursor: pointer; list-style: none; padding: 22px 0; font: 600 18px/1.4 var(--font-display); display: flex; justify-content: space-between; gap: 20px; align-items: baseline; }
+    .qa summary::-webkit-details-marker { display: none; }
+    .qa summary .plus { color: var(--accent); font: 400 24px/1 var(--font-mono); transition: transform .2s ease; }
+    .qa[open] summary .plus { transform: rotate(45deg); }
+    .qa p { margin: 0 0 22px; color: var(--muted); font-size: 16px; }
+    .qa code { font-family: var(--font-mono); background: var(--surface-2); padding: 2px 6px; border-radius: 5px; font-size: 14px; }
+
+    /* Final CTA */
+    .cta-banner { background: var(--term-bg); color: var(--term-fg); text-align: center; border-radius: 20px; padding: 64px 40px; }
+    .cta-banner h2 { color: var(--term-fg); }
+    .cta-banner p { color: rgba(244,242,236,.7); font-size: 18px; margin: 0 auto 28px; max-width: 48ch; }
+    .cta-banner .btn-primary { background: var(--accent); }
+    .cta-banner .btn-ghost { color: var(--term-fg); border-color: rgba(244,242,236,.3); }
+    .cta-banner .btn-ghost:hover { border-color: var(--term-fg); }
+
+    /* Footer */
+    .pagefoot { border-top: 1px solid var(--border); }
+    .foot-inner { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; padding: 32px 0; font-size: 14px; color: var(--muted); }
+    .foot-inner a { color: var(--muted); text-decoration: none; margin-right: 20px; }
+    .foot-inner a:hover { color: var(--fg); }
+
+    .navtoggle { display:none; }
+
+    @media (max-width: 860px) {
+      .demo-grid, .cards3, .steps { grid-template-columns: 1fr; }
+      .step + .step { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: 28px; }
+      .step { padding-right: 0; }
+      .nav-links { display: none; }
+      .section { padding: 56px 0; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topnav">
+    <div class="container topnav-inner">
+      <a href="#top" class="logo">Vibe<b>Keys</b></a>
+      <nav class="nav-links">
+        <a href="#try">Try it</a>
+        <a href="#whats-new">What's new</a>
+        <a href="#how">How it works</a>
+        <a href="#faq">FAQ</a>
+      </nav>
+      <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+    </div>
+  </header>
+
+  <main id="top">
+    <!-- Hero -->
+    <section class="section">
+      <div class="container hero">
+        <p class="eyebrow">Release · Codex support</p>
+        <h1>VibeKeys MAX now <span class="em">speaks Codex</span></h1>
+        <p class="lead">Your keyboard already knows Claude Code. Now one command reconfigures it for OpenAI Codex — <code>/review</code> on a single key, one-tap approvals — and switches back just as fast.</p>
+        <div class="hero-actions">
+          <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+          <a class="btn btn-ghost" href="#try">See it switch</a>
+        </div>
+
+        <div class="terminal" aria-hidden="true">
+          <div class="term-bar"><i></i><i></i><i></i><span>zsh — vibekeys</span></div>
+          <div class="term-body">
+<span class="dim">$</span> <span class="p">vibekeys</span> profile codex<br>
+<span class="ok">✨ You're with Codex now</span><br>
+<br>
+<span class="dim">$</span> <span class="p">vibekeys</span> profile claude<br>
+<span class="ok">✨ You're with Claude Code now</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Interactive demo -->
+    <section class="section" id="try">
+      <div class="container">
+        <div class="demo-head">
+          <h2>Flip the switch</h2>
+          <p class="section-sub">Two keys change; everything else stays put. Toggle below to see exactly what <code>CUSTOM</code> and <code>YOLO</code> do in each tool.</p>
+        </div>
+
+        <div class="demo-toggle-wrap">
+          <div class="toggle" role="tablist" aria-label="Profile">
+            <button id="tab-codex" class="active" role="tab" aria-selected="true"><span class="dot"></span>Codex</button>
+            <button id="tab-claude" role="tab" aria-selected="false"><span class="dot"></span>Claude Code</button>
+          </div>
+        </div>
+
+        <div class="demo-grid">
+          <div class="keycard" id="card-custom">
+            <span class="cap">Custom key</span>
+            <div class="keycap">CUSTOM</div>
+            <div class="binding">
+              <span class="arrow">→</span>
+              <span class="val" id="custom-val">/review</span>
+            </div>
+            <p class="binding note" id="custom-note">Runs a full code review on one press.</p>
+          </div>
+          <div class="keycard" id="card-yolo">
+            <span class="cap">Yolo key</span>
+            <div class="keycap">YOLO</div>
+            <div class="binding">
+              <span class="arrow">→</span>
+              <span class="val" id="yolo-val">y</span>
+            </div>
+            <p class="binding note" id="yolo-note">Approves the pending action.</p>
+          </div>
+        </div>
+
+        <div class="screen-row">
+          <div class="kbd-screen">
+            <span class="msg" id="screen-msg">✨ You're with Codex now</span>
+          </div>
+        </div>
+        <p class="demo-cmd">Ran on your terminal: <code id="demo-cmd-text">vibekeys profile codex</code></p>
+      </div>
+    </section>
+
+    <!-- What's new -->
+    <section class="section" id="whats-new">
+      <div class="container">
+        <div class="demo-head">
+          <h2>Two profiles, one clean switch</h2>
+          <p class="section-sub">A profile is a named set of key bindings you apply in one command. Both ship-in profiles touch only two keys, so switching is a clean round-trip.</p>
+        </div>
+        <table class="ptable">
+          <thead>
+            <tr><th>Profile</th><th><code>CUSTOM</code></th><th><code>YOLO</code></th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="keyname">codex</td>
+              <td><code>/review</code> + Enter<br><span style="color:var(--muted);font-size:13px">one-key code review</span></td>
+              <td><code>y</code><br><span style="color:var(--muted);font-size:13px">approve</span></td>
+            </tr>
+            <tr>
+              <td class="keyname">claude</td>
+              <td><code>/compact</code> + Enter</td>
+              <td><code>Shift+Tab</code><br><span style="color:var(--muted);font-size:13px">allow all edits</span></td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="cards3">
+          <div class="fcard">
+            <div class="n">01</div>
+            <h3>Nothing else moves</h3>
+            <p>Both profiles change only <code>CUSTOM</code> and <code>YOLO</code>. Your <code>MIC</code>, <code>ESC</code>, and <code>ACCEPT</code> keys keep doing what they always did.</p>
+          </div>
+          <div class="fcard">
+            <div class="n">02</div>
+            <h3>You'll know it worked</h3>
+            <p>The confirmation prints once every binding is applied — on your terminal and on the keyboard's own screen. No false "done."</p>
+          </div>
+          <div class="fcard">
+            <div class="n">03</div>
+            <h3>Round-trip, always</h3>
+            <p>Because both profiles touch the same two keys, <code>codex</code> and <code>claude</code> undo each other exactly. Switch as often as you like.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- How it works -->
+    <section class="section" id="how">
+      <div class="container">
+        <div class="demo-head">
+          <h2>Three steps to Codex</h2>
+        </div>
+        <div class="steps">
+          <div class="step">
+            <div class="num">1</div>
+            <h3>Connect your VibeKeys MAX</h3>
+            <p>Pair over Bluetooth and make sure the <code>vibekeys</code> CLI is on your PATH.</p>
+            <code>vibekeys start</code>
+          </div>
+          <div class="step">
+            <div class="num">2</div>
+            <h3>Apply the profile</h3>
+            <p>One command rebinds the keys and confirms on-screen.</p>
+            <code>vibekeys profile codex</code>
+          </div>
+          <div class="step">
+            <div class="num">3</div>
+            <h3>Press a key</h3>
+            <p>In Codex, tap <code>CUSTOM</code> and watch <code>/review</code> land. Tap <code>YOLO</code> to approve.</p>
+            <code>vibekeys profile claude</code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- FAQ -->
+    <section class="section" id="faq">
+      <div class="container">
+        <div class="demo-head"><h2>Questions</h2></div>
+        <div class="faq">
+          <details class="qa" open>
+            <summary>What is VibeKeys MAX? <span class="plus">+</span></summary>
+            <p>It's a physical Bluetooth keyboard controller for AI coding assistants. The <code>vibekeys</code> CLI talks to it over BLE to set key bindings, push status to its screen, and more. This release adds first-class support for OpenAI Codex alongside Claude Code.</p>
+          </details>
+          <details class="qa">
+            <summary>Does switching profiles change my other keys? <span class="plus">+</span></summary>
+            <p>No. The <code>codex</code> and <code>claude</code> profiles touch only <code>CUSTOM</code> and <code>YOLO</code>. Every other key keeps its existing binding, so switching never surprises you.</p>
+          </details>
+          <details class="qa">
+            <summary>How do I switch back to Claude Code? <span class="plus">+</span></summary>
+            <p>Run <code>vibekeys profile claude</code>. It restores <code>CUSTOM</code> to <code>/compact</code> + Enter and <code>YOLO</code> to <code>Shift+Tab</code> — a clean round-trip from the Codex profile.</p>
+          </details>
+          <details class="qa">
+            <summary>What does the confirmation look like? <span class="plus">+</span></summary>
+            <p>After every binding is applied you get one line — <code>✨ You're with Codex now</code> — both in your terminal and on the keyboard's display. If a binding fails to send, you see the error instead.</p>
+          </details>
+          <details class="qa">
+            <summary>Is it open source? <span class="plus">+</span></summary>
+            <p>Yes. VibeKeys is released under the GNU General Public License v3.0 (GPL-3.0). The source and full command reference live on GitHub.</p>
+          </details>
+        </div>
+      </div>
+    </section>
+
+    <!-- Final CTA -->
+    <section class="section">
+      <div class="container">
+        <div class="cta-banner">
+          <h2>Give your keyboard a Codex mode</h2>
+          <p>One command sets it up, one command switches back. Grab the latest <code>vibekeys</code> and try it.</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+            <a class="btn btn-ghost" href="https://github.com/second-state/vibekeys_app#keymap-profiles-switch-between-claude-code--codex">Read the docs</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="pagefoot">
+    <div class="container foot-inner">
+      <div>
+        <a href="https://github.com/second-state/vibekeys_app">GitHub</a>
+        <a href="https://github.com/second-state/vibekeys_app#keymap-profiles-switch-between-claude-code--codex">Docs</a>
+        <a href="https://github.com/second-state/vibekeys_app/blob/main/LICENSE">License</a>
+      </div>
+      <div>© 2026 Second State · GPL-3.0</div>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      var profiles = {
+        codex: {
+          custom: { val: '/review', note: 'Runs a full code review on one press.' },
+          yolo:   { val: 'y',       note: 'Approves the pending action.' },
+          msg: "✨ You're with Codex now",
+          cmd: 'vibekeys profile codex'
+        },
+        claude: {
+          custom: { val: '/compact', note: 'Compacts the conversation.' },
+          yolo:   { val: 'Shift+Tab', note: 'Toggles allow-all-edits.' },
+          msg: "✨ You're with Claude Code now",
+          cmd: 'vibekeys profile claude'
+        }
+      };
+      var els = {
+        customVal: document.getElementById('custom-val'),
+        customNote: document.getElementById('custom-note'),
+        yoloVal: document.getElementById('yolo-val'),
+        yoloNote: document.getElementById('yolo-note'),
+        screen: document.getElementById('screen-msg'),
+        cmd: document.getElementById('demo-cmd-text'),
+        cardCustom: document.getElementById('card-custom'),
+        cardYolo: document.getElementById('card-yolo'),
+        tabCodex: document.getElementById('tab-codex'),
+        tabClaude: document.getElementById('tab-claude')
+      };
+      function flash(el) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+      function apply(name) {
+        var p = profiles[name];
+        els.customVal.textContent = p.custom.val;
+        els.customNote.textContent = p.custom.note;
+        els.yoloVal.textContent = p.yolo.val;
+        els.yoloNote.textContent = p.yolo.note;
+        els.screen.textContent = p.msg;
+        els.cmd.textContent = p.cmd;
+        flash(els.cardCustom); flash(els.cardYolo);
+        var isCodex = name === 'codex';
+        els.tabCodex.classList.toggle('active', isCodex);
+        els.tabClaude.classList.toggle('active', !isCodex);
+        els.tabCodex.setAttribute('aria-selected', isCodex);
+        els.tabClaude.setAttribute('aria-selected', !isCodex);
+      }
+      els.tabCodex.addEventListener('click', function () { apply('codex'); });
+      els.tabClaude.addEventListener('click', function () { apply('claude'); });
+    })();
+  </script>
+</body>
+</html>

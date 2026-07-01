@@ -104,6 +104,8 @@ vibekeys profile codex
 vibekeys profile claude
 ```
 
+On success, a confirmation is printed to the terminal and pushed to the keyboard display (e.g. `✨ You're with Codex now` / `✨ You're with Claude Code now`). The message only appears after every binding is confirmed applied; if a binding fails to send, an error is shown instead.
+
 A profile only touches the keys it defines; the device merges them into the existing keymap. Both profiles touch the same two keys (`CUSTOM` and `YOLO`), so switching back and forth is a clean round-trip and no other keys are affected. The `codex` profile is equivalent to:
 
 ```bash

@@ -101,6 +101,8 @@ vibekeys profile codex    # set up the keyboard for Codex
 vibekeys profile claude   # switch back to Claude Code
 ```
 
+On success, a confirmation is printed to the terminal and shown on the keyboard display (`✨ You're with Codex now` / `✨ You're with Claude Code now`). It only appears once every binding is confirmed applied; a failed send prints an error instead.
+
 ## Keymap Reference
 
 ### Supported Keys
