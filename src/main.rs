@@ -663,8 +663,19 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
                 reply: tx,
             })
         }
-        // Profiles are expanded into individual Keymap commands before reaching here.
-        Command::Profile { .. } => None,
+        // A profile is applied as a single multi-key write.
+        Command::Profile { name } => match profile_keymaps(&name) {
+            Some(keymaps) => {
+                let config = build_keymap_configs(&keymaps);
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYMAP_CONFIG_ID,
+                    data: config.into_bytes(),
+                    reply: tx,
+                })
+            }
+            None => None,
+        },
         Command::AsrConfig {
             clean,
             platform,
@@ -760,19 +771,18 @@ async fn forward_command(port: u16, cmd: &Command) {
                     return;
                 }
             };
-            for (key, binding) in keymaps {
-                let config = build_keymap_config(&key, &binding);
-                match send_keymap(port, &config).await {
-                    // The server replies "ok\n" on success; anything else is a failure.
-                    Ok(resp) if resp.trim() == "ok" => {}
-                    Ok(resp) => {
-                        eprintln!("Failed to apply '{}' profile: {}", name, resp.trim());
-                        return;
-                    }
-                    Err(e) => {
-                        eprintln!("Failed to apply '{}' profile: {}", name, e);
-                        return;
-                    }
+            // Apply the whole profile as a single multi-key write.
+            let config = build_keymap_configs(&keymaps);
+            match send_keymap(port, &config).await {
+                // The server replies "ok\n" on success; anything else is a failure.
+                Ok(resp) if resp.trim() == "ok" => {}
+                Ok(resp) => {
+                    eprintln!("Failed to apply '{}' profile: {}", name, resp.trim());
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("Failed to apply '{}' profile: {}", name, e);
+                    return;
                 }
             }
             // Show the confirmation on the keyboard display, too, and print it locally.
@@ -861,15 +871,32 @@ fn profile_message(name: &str) -> String {
     }
 }
 
-fn build_keymap_config(key: &str, binding: &str) -> String {
+/// Maps a user-facing key name to its physical key, applying the `YOLO` →
+/// `SWITCH` alias.
+fn physical_key_name(key: &str) -> String {
     let key_upper = key.to_uppercase();
-    let key_mapped = if key_upper == "YOLO" {
+    if key_upper == "YOLO" {
         "SWITCH".to_string()
     } else {
         key_upper
-    };
+    }
+}
+
+fn build_keymap_config(key: &str, binding: &str) -> String {
     let parsed = parse_key_binding(binding);
-    serde_json::json!({ key_mapped: parsed }).to_string()
+    serde_json::json!({ physical_key_name(key): parsed }).to_string()
+}
+
+/// Builds a single keymap message carrying several bindings, e.g.
+/// `{"CUSTOM": {...}, "SWITCH": {...}}`. The firmware merges every top-level
+/// key into the existing keymap, so a whole profile is applied in one write
+/// instead of one round-trip per key.
+fn build_keymap_configs(keymaps: &[(String, String)]) -> String {
+    let mut map = serde_json::Map::new();
+    for (key, binding) in keymaps {
+        map.insert(physical_key_name(key), parse_key_binding(binding));
+    }
+    serde_json::Value::Object(map).to_string()
 }
 
 fn build_asr_config(
@@ -1278,6 +1305,18 @@ mod tests {
     }
 
     #[test]
+    fn codex_profile_is_one_multi_key_write() {
+        // A profile is applied as a single message carrying every binding, not
+        // one round-trip per key.
+        let keymaps = profile_keymaps("codex").expect("codex profile exists");
+        let config = build_keymap_configs(&keymaps);
+        assert_eq!(
+            config,
+            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"},"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
+        );
+    }
+
+    #[test]
     fn claude_profile_restores_codex_keys() {
         let keymaps = profile_keymaps("claude").expect("claude profile exists");
         let by_key: std::collections::HashMap<String, String> = keymaps
@@ -1464,30 +1503,25 @@ async fn main() {
     if check_server(port).await {
         forward_command(port, &cli.command).await;
     } else {
-        // Expand a profile into its individual keymap commands so they all get
-        // applied when the server boots.
+        // A profile is applied as a single multi-key write at boot (see
+        // `command_to_blecmd`); follow it with the on-device confirmation,
+        // mirroring the hot path. An unknown name fails fast.
         let initial_cmds = match cli.command {
-            Command::Profile { name } => match profile_keymaps(&name) {
-                Some(keymaps) => {
-                    let mut cmds: Vec<Command> = keymaps
-                        .into_iter()
-                        .map(|(key, binding)| Command::Keymap { key, binding })
-                        .collect();
-                    // Mirror the hot path: after the keymaps, show the confirmation
-                    // on the keyboard display once the device connects.
-                    cmds.push(Command::Send {
-                        message: profile_message(&name),
-                    });
-                    cmds
-                }
-                None => {
+            Command::Profile { name } => {
+                if profile_keymaps(&name).is_none() {
                     log::error!(
                         "Unknown profile: '{}'. Available profiles: claude, codex",
                         name
                     );
                     std::process::exit(1);
                 }
-            },
+                vec![
+                    Command::Profile { name: name.clone() },
+                    Command::Send {
+                        message: profile_message(&name),
+                    },
+                ]
+            }
             other => vec![other],
         };
         run_server(port, initial_cmds).await;
