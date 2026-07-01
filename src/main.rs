@@ -45,6 +45,8 @@ enum Command {
     Send { message: String },
     /// Configure key mapping
     Keymap { key: String, binding: String },
+    /// Apply a predefined keymap profile (e.g. `codex`)
+    Profile { name: String },
     /// Read Claude Code hook JSON from stdin and forward to device
     Claude,
     /// Alias for 'claude' - reads Claude Code hook JSON from stdin and forwards to device
@@ -508,11 +510,11 @@ async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -
     }
 }
 
-async fn run_server(port: u16, initial_cmd: Option<Command>) {
+async fn run_server(port: u16, initial_cmds: Vec<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let notify = Arc::new(tokio::sync::Notify::new());
 
-    if let Some(ble_cmd) = initial_cmd.map(command_to_blecmd).flatten() {
+    for ble_cmd in initial_cmds.into_iter().filter_map(command_to_blecmd) {
         if ble_tx.send(ble_cmd).await.is_err() {
             log::error!("Failed to send initial command to BLE task");
         }
@@ -665,6 +667,8 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
                 reply: tx,
             })
         }
+        // Profiles are expanded into individual Keymap commands before reaching here.
+        Command::Profile { .. } => None,
         Command::AsrConfig {
             clean,
             platform,
@@ -745,6 +749,15 @@ async fn forward_command(port: u16, cmd: &Command) {
             let config = build_keymap_config(key, binding);
             send_keymap(port, &config).await;
         }
+        Command::Profile { name } => match profile_keymaps(name) {
+            Some(keymaps) => {
+                for (key, binding) in keymaps {
+                    let config = build_keymap_config(&key, &binding);
+                    send_keymap(port, &config).await;
+                }
+            }
+            None => log::error!("Unknown profile: '{}'. Available profiles: claude, codex", name),
+        },
         Command::AsrConfig {
             clean: true,
             platform: _,
@@ -792,6 +805,28 @@ async fn forward_command(port: u16, cmd: &Command) {
                 send_command(port, &msg).await;
             }
         }
+    }
+}
+
+/// Returns the (key, binding) pairs for a named keymap profile.
+///
+/// Bindings use the same syntax as the `keymap` command: a quoted string is a
+/// text macro, so `"/review\n"` types `/review` followed by Enter.
+fn profile_keymaps(name: &str) -> Option<Vec<(String, String)>> {
+    match name.to_lowercase().as_str() {
+        // Claude Code. Restores the two keys that the codex profile overrides back to
+        // their Claude defaults, so you can switch back. Other keys are left untouched.
+        "claude" => Some(vec![
+            ("CUSTOM".to_string(), "\"/compact\\n\"".to_string()), // /compact + Enter
+            ("YOLO".to_string(), "Shift+Tab".to_string()),         // allow all edits
+        ]),
+        // Codex: only overrides the two keys that differ from the Claude defaults.
+        // CUSTOM triggers `/review` (one-key code review), YOLO approves.
+        "codex" => Some(vec![
+            ("CUSTOM".to_string(), "\"/review\\n\"".to_string()),
+            ("YOLO".to_string(), "\"y\"".to_string()),
+        ]),
+        _ => None,
     }
 }
 
@@ -1187,6 +1222,61 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_profile_bindings() {
+        let keymaps = profile_keymaps("codex").expect("codex profile exists");
+        let configs: Vec<String> = keymaps
+            .iter()
+            .map(|(k, b)| build_keymap_config(k, b))
+            .collect();
+
+        // CUSTOM types `/review` followed by Enter (the `\n` is unescaped to a newline).
+        assert_eq!(
+            configs[0],
+            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"}}"#
+        );
+        // YOLO is an alias for the physical SWITCH key; it types `y`.
+        assert_eq!(
+            configs[1],
+            r#"{"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
+        );
+    }
+
+    #[test]
+    fn claude_profile_restores_codex_keys() {
+        let keymaps = profile_keymaps("claude").expect("claude profile exists");
+        let by_key: std::collections::HashMap<String, String> = keymaps
+            .iter()
+            .map(|(k, b)| (k.clone(), build_keymap_config(k, b)))
+            .collect();
+
+        // The claude profile restores exactly the two keys the codex profile overrides.
+        let keys: std::collections::HashSet<&str> =
+            keymaps.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["CUSTOM", "YOLO"].into_iter().collect::<std::collections::HashSet<_>>()
+        );
+        assert_eq!(
+            by_key["CUSTOM"],
+            r#"{"CUSTOM":{"raw":"\"/compact\\n\"","type":"text","value":"/compact\n"}}"#
+        );
+        assert_eq!(
+            by_key["YOLO"],
+            r#"{"SWITCH":{"key":"TAB","modifiers":["shift"],"raw":"Shift+Tab","type":"combo"}}"#
+        );
+    }
+
+    #[test]
+    fn unknown_profile_is_none() {
+        assert!(profile_keymaps("nope").is_none());
+    }
+}
+
 // ===== Main =====
 
 fn init_logger() {
@@ -1261,7 +1351,7 @@ async fn main() {
             log::info!("vibekeys server already running on port {}", port);
             return;
         }
-        run_server(port, None).await;
+        run_server(port, vec![]).await;
         return;
     }
 
@@ -1287,13 +1377,13 @@ async fn main() {
                 } else {
                     run_server(
                         port,
-                        Some(Command::AsrConfig {
+                        vec![Command::AsrConfig {
                             clean: false,
                             platform: Some(platform),
                             uri,
                             api_key,
                             model,
-                        }),
+                        }],
                     )
                     .await;
                 }
@@ -1315,10 +1405,10 @@ async fn main() {
                 } else {
                     run_server(
                         port,
-                        Some(Command::WifiConfig {
+                        vec![Command::WifiConfig {
                             ssid: Some(ssid),
                             pass,
-                        }),
+                        }],
                     )
                     .await;
                 }
@@ -1335,6 +1425,21 @@ async fn main() {
     if check_server(port).await {
         forward_command(port, &cli.command).await;
     } else {
-        run_server(port, Some(cli.command)).await;
+        // Expand a profile into its individual keymap commands so they all get
+        // applied when the server boots.
+        let initial_cmds = match cli.command {
+            Command::Profile { name } => match profile_keymaps(&name) {
+                Some(keymaps) => keymaps
+                    .into_iter()
+                    .map(|(key, binding)| Command::Keymap { key, binding })
+                    .collect(),
+                None => {
+                    log::error!("Unknown profile: '{}'. Available profiles: claude, codex", name);
+                    std::process::exit(1);
+                }
+            },
+            other => vec![other],
+        };
+        run_server(port, initial_cmds).await;
     }
 }

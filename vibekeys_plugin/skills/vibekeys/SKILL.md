@@ -81,6 +81,36 @@ vibekeys keymap <KEY> <BINDING>
 
 Each call configures one key. The device merges it into the existing keymap.
 
+### Keymap profiles
+
+Apply a predefined set of keymaps in one command:
+
+```bash
+vibekeys profile <NAME>
+```
+
+Available profiles:
+
+| Profile | Bindings |
+|---------|----------|
+| `claude` | Restores the Claude defaults for the keys `codex` changes: `CUSTOM`→`/compact`+Enter, `YOLO`→Shift+Tab (allow all edits) |
+| `codex` | `CUSTOM` → types `/review` + Enter (one-key code review); `YOLO` → types `y` (approve) |
+
+```bash
+# Set up the keyboard for use with Codex
+vibekeys profile codex
+
+# Switch back to Claude Code (restores the defaults)
+vibekeys profile claude
+```
+
+A profile only touches the keys it defines; the device merges them into the existing keymap. Both profiles touch the same two keys (`CUSTOM` and `YOLO`), so switching back and forth is a clean round-trip and no other keys are affected. The `codex` profile is equivalent to:
+
+```bash
+vibekeys keymap CUSTOM '"/review\n"'   # /review one-key code review
+vibekeys keymap YOLO   '"y"'           # approve
+```
+
 ### ASR Configuration
 
 Configure the ASR (Automatic Speech Recognition) service for voice features:
