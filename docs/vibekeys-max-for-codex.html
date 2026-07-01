@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>VibeKeys MAX for Codex — one command switches your keyboard</title>
-  <meta name="description" content="VibeKeys MAX now speaks OpenAI Codex. One command reconfigures the physical keyboard — /review on a single key, one-tap approvals — and switches back to Claude Code just as fast." />
+  <title>VibeKeys — one keypad for every AI coding tool, now with a Codex mode</title>
+  <meta name="description" content="VibeKeys works with Codex, Claude Code, Cursor, Gemini CLI and more — and now switches between Codex and Claude Code in one command. From $29, shipping today." />
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600;8..60,700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
@@ -33,7 +33,6 @@
     .section + .section { border-top: 1px solid var(--border); }
     a { color: inherit; }
 
-    /* Nav */
     .topnav { position: sticky; top: 0; z-index: 20; background: color-mix(in oklch, var(--bg) 90%, transparent); border-bottom: 1px solid var(--border); backdrop-filter: blur(10px); }
     .topnav-inner { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 0; }
     .logo { font: 700 20px/1 var(--font-display); letter-spacing: -0.01em; text-decoration: none; }
@@ -47,15 +46,15 @@
     .btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
     .btn-ghost:hover { border-color: var(--fg); }
 
-    /* Hero */
     .eyebrow { margin: 0 0 16px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.14em; font: 700 12px/1.2 var(--font-mono); }
     .hero { text-align: center; }
-    .hero h1 { margin: 0 auto 22px; max-width: 15ch; font: 700 clamp(42px, 6.4vw, 74px)/1.03 var(--font-display); letter-spacing: -0.025em; }
+    .hero h1 { margin: 0 auto 22px; max-width: 18ch; font: 700 clamp(40px, 6vw, 70px)/1.03 var(--font-display); letter-spacing: -0.025em; }
     .hero h1 .em { color: var(--accent); font-style: italic; }
-    .lead { margin: 0 auto 34px; color: var(--muted); font-size: 20px; max-width: 52ch; }
+    .lead { margin: 0 auto 20px; color: var(--muted); font-size: 20px; max-width: 56ch; }
+    .price-line { margin: 0 auto 32px; font: 500 15px/1.5 var(--font-mono); color: var(--fg); }
+    .price-line b { color: var(--accent); }
     .hero-actions { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
 
-    /* Terminal block */
     .terminal { margin: 48px auto 0; max-width: 640px; background: var(--term-bg); border-radius: 14px; box-shadow: 0 24px 60px -30px rgba(26,25,22,.6); overflow: hidden; text-align: left; }
     .term-bar { display: flex; align-items: center; gap: 7px; padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
     .term-bar i { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
@@ -66,10 +65,15 @@
     .term-body .ok { color: var(--term-green); }
     .term-body .dim { color: rgba(244,242,236,.5); }
 
-    /* Demo */
+    /* Tool strip */
+    .tools { text-align: center; }
+    .tools .cap { font: 700 12px/1 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+    .tool-list { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-top: 20px; }
+    .tool-list span { font: 600 15px/1 var(--font-mono); padding: 10px 16px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); }
+
     .demo-head { text-align: center; max-width: 60ch; margin: 0 auto 40px; }
     h2 { margin: 0 0 14px; font: 700 clamp(30px, 4vw, 44px)/1.08 var(--font-display); letter-spacing: -0.02em; }
-    .section-sub { color: var(--muted); font-size: 18px; margin: 0 auto; max-width: 54ch; }
+    .section-sub { color: var(--muted); font-size: 18px; margin: 0 auto; max-width: 56ch; }
     .toggle { display: inline-flex; padding: 5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; gap: 4px; }
     .toggle button { border: 0; background: transparent; padding: 10px 22px; border-radius: 8px; font: 600 15px/1 var(--font-body); color: var(--muted); cursor: pointer; transition: all .16s ease; }
     .toggle button.active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
@@ -88,20 +92,11 @@
     .keycard.flash { animation: flash .5s ease; }
     @keyframes flash { 0%{ background: #fbf1ec } 100%{ background: var(--surface) } }
 
-    /* keyboard screen sim */
     .screen-row { margin-top: 24px; display:grid; grid-template-columns: 1fr; gap: 16px; }
     .kbd-screen { background: var(--term-bg); border-radius: 14px; padding: 22px 24px; display:flex; align-items:center; justify-content:center; min-height: 96px; text-align:center; box-shadow: inset 0 0 0 3px rgba(244,242,236,.06); }
     .kbd-screen .msg { font: 600 20px/1.3 var(--font-mono); color: var(--term-green); }
     .demo-cmd { text-align:center; margin-top: 20px; font: 14px/1 var(--font-mono); color: var(--muted); }
     .demo-cmd code { color: var(--fg); background: var(--surface-2); padding: 6px 10px; border-radius: 7px; border: 1px solid var(--border); }
-
-    /* Feature table */
-    .ptable { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 15px; }
-    .ptable th, .ptable td { text-align: left; padding: 16px 18px; border-bottom: 1px solid var(--border); vertical-align: top; }
-    .ptable thead th { font: 700 12px/1 var(--font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); }
-    .ptable td code, .ptable th code { font-family: var(--font-mono); background: var(--surface-2); padding: 3px 7px; border-radius: 6px; font-size: 13px; }
-    .ptable tbody tr:last-child td { border-bottom: 0; }
-    .ptable .keyname { font-family: var(--font-mono); font-weight: 700; }
 
     .cards3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 12px; }
     .fcard { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 26px; }
@@ -109,16 +104,18 @@
     .fcard h3 { margin: 14px 0 8px; font: 600 21px/1.2 var(--font-display); letter-spacing: -0.01em; }
     .fcard p { margin: 0; color: var(--muted); font-size: 15px; }
 
-    /* Steps */
-    .steps { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; margin-top: 8px; }
-    .step { padding: 28px 28px 28px 0; }
-    .step + .step { border-left: 1px solid var(--border); padding-left: 28px; }
-    .step .num { font: 700 clamp(34px,4vw,44px)/1 var(--font-display); color: var(--accent); }
-    .step h3 { margin: 14px 0 8px; font: 600 19px/1.25 var(--font-display); }
-    .step p { margin: 0 0 12px; color: var(--muted); font-size: 15px; }
-    .step code { display: inline-block; font: 500 13px/1.6 var(--font-mono); background: var(--surface-2); border: 1px solid var(--border); padding: 8px 12px; border-radius: 8px; color: var(--fg); }
+    /* Pricing */
+    .price-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 12px; align-items: stretch; }
+    .tier { border: 1px solid var(--border); border-radius: 16px; padding: 28px; background: var(--surface); display: flex; flex-direction: column; }
+    .tier.hero { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); position: relative; }
+    .tier .badge { position: absolute; top: -12px; left: 28px; background: var(--accent); color: #fff; font: 700 11px/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; padding: 6px 10px; border-radius: 6px; }
+    .tier h3 { margin: 0; font: 600 22px/1.1 var(--font-display); }
+    .tier .price { margin: 12px 0 4px; font: 700 40px/1 var(--font-display); }
+    .tier .conn { color: var(--muted); font: 500 13px/1.4 var(--font-mono); }
+    .tier ul { margin: 18px 0 24px; padding: 0 0 0 18px; color: var(--muted); font-size: 15px; }
+    .tier li { margin: 8px 0; }
+    .tier .btn { margin-top: auto; justify-content: center; }
 
-    /* FAQ */
     .faq { max-width: 780px; margin: 0 auto; }
     .qa { border-bottom: 1px solid var(--border); }
     .qa summary { cursor: pointer; list-style: none; padding: 22px 0; font: 600 18px/1.4 var(--font-display); display: flex; justify-content: space-between; gap: 20px; align-items: baseline; }
@@ -128,54 +125,49 @@
     .qa p { margin: 0 0 22px; color: var(--muted); font-size: 16px; }
     .qa code { font-family: var(--font-mono); background: var(--surface-2); padding: 2px 6px; border-radius: 5px; font-size: 14px; }
 
-    /* Final CTA */
     .cta-banner { background: var(--term-bg); color: var(--term-fg); text-align: center; border-radius: 20px; padding: 64px 40px; }
     .cta-banner h2 { color: var(--term-fg); }
-    .cta-banner p { color: rgba(244,242,236,.7); font-size: 18px; margin: 0 auto 28px; max-width: 48ch; }
+    .cta-banner p { color: rgba(244,242,236,.7); font-size: 18px; margin: 0 auto 28px; max-width: 50ch; }
     .cta-banner .btn-primary { background: var(--accent); }
     .cta-banner .btn-ghost { color: var(--term-fg); border-color: rgba(244,242,236,.3); }
     .cta-banner .btn-ghost:hover { border-color: var(--term-fg); }
 
-    /* Footer */
     .pagefoot { border-top: 1px solid var(--border); }
     .foot-inner { display: flex; justify-content: space-between; gap: 20px; flex-wrap: wrap; padding: 32px 0; font-size: 14px; color: var(--muted); }
     .foot-inner a { color: var(--muted); text-decoration: none; margin-right: 20px; }
     .foot-inner a:hover { color: var(--fg); }
 
-    .navtoggle { display:none; }
-
     @media (max-width: 860px) {
-      .demo-grid, .cards3, .steps { grid-template-columns: 1fr; }
-      .step + .step { border-left: 0; border-top: 1px solid var(--border); padding-left: 0; padding-top: 28px; }
-      .step { padding-right: 0; }
+      .demo-grid, .cards3, .price-grid { grid-template-columns: 1fr; }
       .nav-links { display: none; }
       .section { padding: 56px 0; }
     }
   </style>
 </head>
-<body>
+<body id="top">
   <header class="topnav">
     <div class="container topnav-inner">
       <a href="#top" class="logo">Vibe<b>Keys</b></a>
       <nav class="nav-links">
         <a href="#try">Try it</a>
-        <a href="#whats-new">What's new</a>
-        <a href="#how">How it works</a>
+        <a href="#why">Why VibeKeys</a>
+        <a href="#pricing">Pricing</a>
         <a href="#faq">FAQ</a>
       </nav>
-      <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+      <a class="btn btn-primary" href="https://vibekeys.dev">Get VibeKeys</a>
     </div>
   </header>
 
-  <main id="top">
+  <main>
     <!-- Hero -->
     <section class="section">
       <div class="container hero">
         <p class="eyebrow">Release · Codex support</p>
-        <h1>VibeKeys MAX now <span class="em">speaks Codex</span></h1>
-        <p class="lead">Your keyboard already knows Claude Code. Now one command reconfigures it for OpenAI Codex — <code>/review</code> on a single key, one-tap approvals — and switches back just as fast.</p>
+        <h1>One keypad for <span class="em">every</span> AI coding tool — now with a Codex mode</h1>
+        <p class="lead">One control surface for the AI coding tools you already use — Claude Code, Codex, Cursor, Gemini CLI. And now it flips between Codex and Claude Code in a single command.</p>
+        <p class="price-line">From <b>$29</b> · VibeKeys Max <b>$99</b> · ships worldwide today</p>
         <div class="hero-actions">
-          <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+          <a class="btn btn-primary" href="https://vibekeys.dev">Get VibeKeys</a>
           <a class="btn btn-ghost" href="#try">See it switch</a>
         </div>
 
@@ -192,12 +184,22 @@
       </div>
     </section>
 
+    <!-- Tool strip -->
+    <section class="section">
+      <div class="container tools">
+        <span class="cap">Works with the tools you already use</span>
+        <div class="tool-list">
+          <span>Claude Code</span><span>Codex</span><span>Cursor</span><span>Gemini CLI</span><span>OpenCode</span><span>Copilot</span>
+        </div>
+      </div>
+    </section>
+
     <!-- Interactive demo -->
     <section class="section" id="try">
       <div class="container">
         <div class="demo-head">
           <h2>Flip the switch</h2>
-          <p class="section-sub">Two keys change; everything else stays put. Toggle below to see exactly what <code>CUSTOM</code> and <code>YOLO</code> do in each tool.</p>
+          <p class="section-sub">Two keys change; everything else stays put. Toggle below to see what <code>CUSTOM</code> and <code>YOLO</code> do in each tool.</p>
         </div>
 
         <div class="demo-toggle-wrap">
@@ -237,75 +239,72 @@
       </div>
     </section>
 
-    <!-- What's new -->
-    <section class="section" id="whats-new">
+    <!-- Why VibeKeys -->
+    <section class="section" id="why">
       <div class="container">
         <div class="demo-head">
-          <h2>Two profiles, one clean switch</h2>
-          <p class="section-sub">A profile is a named set of key bindings you apply in one command. Both ship-in profiles touch only two keys, so switching is a clean round-trip.</p>
+          <h2>Your tools. Your muscle memory.</h2>
+          <p class="section-sub">One keypad across Claude Code, Codex, Cursor, Gemini CLI and more — with voice input, a precision knob, and (on Max) an OLED status screen and wireless remote.</p>
         </div>
-        <table class="ptable">
-          <thead>
-            <tr><th>Profile</th><th><code>CUSTOM</code></th><th><code>YOLO</code></th></tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="keyname">codex</td>
-              <td><code>/review</code> + Enter<br><span style="color:var(--muted);font-size:13px">one-key code review</span></td>
-              <td><code>y</code><br><span style="color:var(--muted);font-size:13px">approve</span></td>
-            </tr>
-            <tr>
-              <td class="keyname">claude</td>
-              <td><code>/compact</code> + Enter</td>
-              <td><code>Shift+Tab</code><br><span style="color:var(--muted);font-size:13px">allow all edits</span></td>
-            </tr>
-          </tbody>
-        </table>
 
         <div class="cards3">
           <div class="fcard">
             <div class="n">01</div>
             <h3>Nothing else moves</h3>
-            <p>Both profiles change only <code>CUSTOM</code> and <code>YOLO</code>. Your <code>MIC</code>, <code>ESC</code>, and <code>ACCEPT</code> keys keep doing what they always did.</p>
+            <p>The <code>codex</code> and <code>claude</code> profiles change only <code>CUSTOM</code> and <code>YOLO</code>. Every other key keeps its binding.</p>
           </div>
           <div class="fcard">
             <div class="n">02</div>
             <h3>You'll know it worked</h3>
-            <p>The confirmation prints once every binding is applied — on your terminal and on the keyboard's own screen. No false "done."</p>
+            <p>The confirmation prints once every binding is applied — on your terminal and on the keypad's screen. No false "done."</p>
           </div>
           <div class="fcard">
             <div class="n">03</div>
             <h3>Round-trip, always</h3>
-            <p>Because both profiles touch the same two keys, <code>codex</code> and <code>claude</code> undo each other exactly. Switch as often as you like.</p>
+            <p>Both profiles touch the same two keys, so <code>codex</code> and <code>claude</code> undo each other exactly. Switch as often as you like.</p>
           </div>
         </div>
       </div>
     </section>
 
-    <!-- How it works -->
-    <section class="section" id="how">
+    <!-- Pricing -->
+    <section class="section" id="pricing">
       <div class="container">
-        <div class="demo-head">
-          <h2>Three steps to Codex</h2>
-        </div>
-        <div class="steps">
-          <div class="step">
-            <div class="num">1</div>
-            <h3>Connect your VibeKeys MAX</h3>
-            <p>Pair over Bluetooth and make sure the <code>vibekeys</code> CLI is on your PATH.</p>
-            <code>vibekeys start</code>
+        <div class="demo-head"><h2>Pick your VibeKeys</h2><p class="section-sub">One-time purchase. Free worldwide shipping.</p></div>
+        <div class="price-grid">
+          <div class="tier">
+            <h3>VibeKeys Pro</h3>
+            <div class="price">$29</div>
+            <div class="conn">USB-C wired</div>
+            <ul>
+              <li>6 remappable keys + knob</li>
+              <li>Voice input</li>
+              <li>Works with every AI coding tool</li>
+            </ul>
+            <a class="btn btn-ghost" href="https://vibekeys.dev">Get Pro</a>
           </div>
-          <div class="step">
-            <div class="num">2</div>
-            <h3>Apply the profile</h3>
-            <p>One command rebinds the keys and confirms on-screen.</p>
-            <code>vibekeys profile codex</code>
+          <div class="tier">
+            <h3>VibeKeys Plus</h3>
+            <div class="price">$49</div>
+            <div class="conn">BT + Wi-Fi + USB-C</div>
+            <ul>
+              <li>Everything in Pro</li>
+              <li>Wireless, up to 15-day battery</li>
+            </ul>
+            <a class="btn btn-ghost" href="https://vibekeys.dev">Get Plus</a>
           </div>
-          <div class="step">
-            <div class="num">3</div>
-            <h3>Press a key</h3>
-            <p>In Codex, tap <code>CUSTOM</code> and watch <code>/review</code> land. Tap <code>YOLO</code> to approve.</p>
-            <code>vibekeys profile claude</code>
+          <div class="tier hero">
+            <span class="badge">Most popular</span>
+            <h3>VibeKeys Max</h3>
+            <div class="price">$99</div>
+            <div class="conn">BT + Wi-Fi + USB-C</div>
+            <ul>
+              <li>Everything in Plus</li>
+              <li>OLED status display</li>
+              <li>Wireless remote — drive your agent from across the room</li>
+              <li>Multiple colors, made to order</li>
+            </ul>
+            <a class="btn btn-primary" href="https://vibekeys.dev">Get Max</a>
           </div>
         </div>
       </div>
@@ -317,8 +316,8 @@
         <div class="demo-head"><h2>Questions</h2></div>
         <div class="faq">
           <details class="qa" open>
-            <summary>What is VibeKeys MAX? <span class="plus">+</span></summary>
-            <p>It's a physical Bluetooth keyboard controller for AI coding assistants. The <code>vibekeys</code> CLI talks to it over BLE to set key bindings, push status to its screen, and more. This release adds first-class support for OpenAI Codex alongside Claude Code.</p>
+            <summary>Which AI coding tools does it work with? <span class="plus">+</span></summary>
+            <p>VibeKeys is tool-agnostic — Claude Code, Codex, Cursor, Gemini CLI, OpenCode, Copilot and more. This release adds one-command profiles for the two most common (<code>vibekeys profile codex</code> / <code>claude</code>) so switching between them is instant.</p>
           </details>
           <details class="qa">
             <summary>Does switching profiles change my other keys? <span class="plus">+</span></summary>
@@ -329,12 +328,12 @@
             <p>Run <code>vibekeys profile claude</code>. It restores <code>CUSTOM</code> to <code>/compact</code> + Enter and <code>YOLO</code> to <code>Shift+Tab</code> — a clean round-trip from the Codex profile.</p>
           </details>
           <details class="qa">
-            <summary>What does the confirmation look like? <span class="plus">+</span></summary>
-            <p>After every binding is applied you get one line — <code>✨ You're with Codex now</code> — both in your terminal and on the keyboard's display. If a binding fails to send, you see the error instead.</p>
+            <summary>It's 3D-printed — is the build quality good? <span class="plus">+</span></summary>
+            <p>Made-to-order 3D printing is what enables multiple colors and custom key icons. Build quality is the thing early customers compliment most. Every order includes a 30-day exchange for any manufacturing defect or shipping damage.</p>
           </details>
           <details class="qa">
-            <summary>Is it open source? <span class="plus">+</span></summary>
-            <p>Yes. VibeKeys is released under the GNU General Public License v3.0 (GPL-3.0). The source and full command reference live on GitHub.</p>
+            <summary>Is the software open source? <span class="plus">+</span></summary>
+            <p>Yes — the <code>vibekeys</code> CLI that drives the device is open source under GPL-3.0, so your control surface is fully inspectable and scriptable.</p>
           </details>
         </div>
       </div>
@@ -344,10 +343,10 @@
     <section class="section">
       <div class="container">
         <div class="cta-banner">
-          <h2>Give your keyboard a Codex mode</h2>
-          <p>One command sets it up, one command switches back. Grab the latest <code>vibekeys</code> and try it.</p>
+          <h2>Give your keypad a Codex mode</h2>
+          <p>One command sets it up, one command switches back — and it still works with every other AI coding tool. From $29, shipping today.</p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="https://github.com/second-state/vibekeys_app">Get VibeKeys</a>
+            <a class="btn btn-primary" href="https://vibekeys.dev">Get VibeKeys</a>
             <a class="btn btn-ghost" href="https://github.com/second-state/vibekeys_app#keymap-profiles-switch-between-claude-code--codex">Read the docs</a>
           </div>
         </div>
@@ -358,11 +357,11 @@
   <footer class="pagefoot">
     <div class="container foot-inner">
       <div>
+        <a href="https://vibekeys.dev">vibekeys.dev</a>
         <a href="https://github.com/second-state/vibekeys_app">GitHub</a>
-        <a href="https://github.com/second-state/vibekeys_app#keymap-profiles-switch-between-claude-code--codex">Docs</a>
         <a href="https://github.com/second-state/vibekeys_app/blob/main/LICENSE">License</a>
       </div>
-      <div>© 2026 Second State · GPL-3.0</div>
+      <div>© 2026 Second State · CLI is GPL-3.0</div>
     </div>
   </footer>
 
