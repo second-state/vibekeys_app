@@ -83,7 +83,7 @@ vibekeys keymap <KEY> <BINDING>
 
 Configures one key at a time. The device merges it into the existing keymap.
 
-### Apply a keymap profile
+### Keymap profiles (switch between Claude Code & Codex)
 
 ```bash
 vibekeys profile <NAME>

@@ -81,7 +81,7 @@ vibekeys keymap <KEY> <BINDING>
 
 Each call configures one key. The device merges it into the existing keymap.
 
-### Keymap profiles
+### Keymap profiles (switch between Claude Code & Codex)
 
 Apply a predefined set of keymaps in one command:
 

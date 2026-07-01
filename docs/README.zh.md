@@ -81,7 +81,7 @@ vibekeys keymap <KEY> <BINDING>
 
 每次配置一个键，设备会合并到已有的按键映射中。
 
-### 应用按键映射 profile
+### 按键映射 profile（在 Claude Code 与 Codex 之间切换）
 
 ```bash
 vibekeys profile <NAME>
