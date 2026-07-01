@@ -1468,10 +1468,18 @@ async fn main() {
         // applied when the server boots.
         let initial_cmds = match cli.command {
             Command::Profile { name } => match profile_keymaps(&name) {
-                Some(keymaps) => keymaps
-                    .into_iter()
-                    .map(|(key, binding)| Command::Keymap { key, binding })
-                    .collect(),
+                Some(keymaps) => {
+                    let mut cmds: Vec<Command> = keymaps
+                        .into_iter()
+                        .map(|(key, binding)| Command::Keymap { key, binding })
+                        .collect();
+                    // Mirror the hot path: after the keymaps, show the confirmation
+                    // on the keyboard display once the device connects.
+                    cmds.push(Command::Send {
+                        message: profile_message(&name),
+                    });
+                    cmds
+                }
                 None => {
                     log::error!(
                         "Unknown profile: '{}'. Available profiles: claude, codex",
