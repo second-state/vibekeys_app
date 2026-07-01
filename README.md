@@ -83,6 +83,28 @@ vibekeys keymap <KEY> <BINDING>
 
 Configures one key at a time. The device merges it into the existing keymap.
 
+### Keymap profiles (switch between Claude Code & Codex)
+
+```bash
+vibekeys profile <NAME>
+```
+
+Applies a predefined set of keymaps in one command. Both profiles touch only `CUSTOM` and `YOLO`, so switching between them is a clean round-trip and other keys are left untouched.
+
+| Profile | `CUSTOM` | `YOLO` |
+|---------|----------|--------|
+| `codex` | `/review` + Enter (one-key code review) | `y` (approve) |
+| `claude` | `/compact` + Enter | `Shift+Tab` (allow all edits) |
+
+```bash
+vibekeys profile codex    # set up the keyboard for Codex
+vibekeys profile claude   # switch back to Claude Code
+```
+
+On success, a confirmation is printed to the terminal and shown on the keyboard display (`✨ You're with Codex now` / `✨ You're with Claude Code now`). It only appears once the profile is confirmed applied; a failed send prints an error instead.
+
+> Note: `claude` resets `CUSTOM` and `YOLO` to their **factory Claude defaults**. It doesn't restore custom bindings you may have set on those keys, so the clean `codex` ↔ `claude` round-trip holds against the defaults, not arbitrary prior state.
+
 ## Keymap Reference
 
 ### Supported Keys
@@ -361,4 +383,4 @@ cargo build --release
 
 ## License
 
-MIT
+GNU General Public License v3.0 (GPL-3.0). See [LICENSE](LICENSE).

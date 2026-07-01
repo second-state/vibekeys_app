@@ -81,6 +81,28 @@ vibekeys keymap <KEY> <BINDING>
 
 每次配置一个键，设备会合并到已有的按键映射中。
 
+### 按键映射 profile（在 Claude Code 与 Codex 之间切换）
+
+```bash
+vibekeys profile <NAME>
+```
+
+一条命令套用一组预设按键映射。两个 profile 都只修改 `CUSTOM` 和 `YOLO` 两个键，因此来回切换是干净的往返，不会影响其他键。
+
+| Profile | `CUSTOM` | `YOLO` |
+|---------|----------|--------|
+| `codex` | `/review` + 回车（一键代码审查） | `y`（批准） |
+| `claude` | `/compact` + 回车 | `Shift+Tab`（允许全部编辑） |
+
+```bash
+vibekeys profile codex    # 把键盘配成 Codex 用法
+vibekeys profile claude   # 切回 Claude Code
+```
+
+切换成功后，会在终端打印并在键盘屏幕上显示确认信息（`✨ You're with Codex now` / `✨ You're with Claude Code now`）。该提示仅在整组按键确认下发成功后才出现；若下发失败，则改为显示错误。
+
+> 注意:`claude` 会把 `CUSTOM` 和 `YOLO` 重置为 **Claude 出厂默认**。它不会恢复你之前给这两个键设置的自定义绑定,因此 `codex` ↔ `claude` 的干净往返只针对默认值,不针对任意先前状态。
+
 ## Keymap 详细说明
 
 ### 支持的按键
@@ -359,4 +381,4 @@ cargo build --release
 
 ## License
 
-MIT
+GNU General Public License v3.0 (GPL-3.0)。见 [LICENSE](../LICENSE)。
