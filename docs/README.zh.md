@@ -99,7 +99,9 @@ vibekeys profile codex    # 把键盘配成 Codex 用法
 vibekeys profile claude   # 切回 Claude Code
 ```
 
-切换成功后，会在终端打印并在键盘屏幕上显示确认信息（`✨ You're with Codex now` / `✨ You're with Claude Code now`）。该提示仅在所有按键都确认下发成功后才出现；若有某条下发失败，则改为显示错误。
+切换成功后，会在终端打印并在键盘屏幕上显示确认信息（`✨ You're with Codex now` / `✨ You're with Claude Code now`）。该提示仅在整组按键确认下发成功后才出现；若下发失败，则改为显示错误。
+
+> 注意:`claude` 会把 `CUSTOM` 和 `YOLO` 重置为 **Claude 出厂默认**。它不会恢复你之前给这两个键设置的自定义绑定,因此 `codex` ↔ `claude` 的干净往返只针对默认值,不针对任意先前状态。
 
 ## Keymap 详细说明
 
