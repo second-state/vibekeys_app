@@ -558,45 +558,41 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
 
 // ===== Command Forwarding =====
 
-async fn send_command(port: u16, message: &str) {
+/// Sends text to the keyboard display. Returns the server response (e.g. "ok\n"),
+/// or an Err message if the request could not be made.
+async fn send_command(port: u16, message: &str) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{}/send", port);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .no_proxy()
-        .build();
+        .build()
+        .map_err(|_| "Failed to connect to server".to_string())?;
 
-    if let Ok(client) = client {
-        match client.post(&url).body(message.to_string()).send().await {
-            Ok(resp) => {
-                if let Ok(text) = resp.text().await {
-                    print!("{}", text);
-                }
-            }
-            Err(_) => eprintln!("Failed to connect to server"),
-        }
-    } else {
-        eprintln!("Failed to connect to server");
+    match client.post(&url).body(message.to_string()).send().await {
+        Ok(resp) => resp
+            .text()
+            .await
+            .map_err(|_| "Failed to read server response".to_string()),
+        Err(_) => Err("Failed to connect to server".to_string()),
     }
 }
 
-async fn send_keymap(port: u16, config: &str) {
+/// Sends one keymap config to the server. Returns the server response (e.g. "ok\n"),
+/// or an Err message if the request could not be made.
+async fn send_keymap(port: u16, config: &str) -> Result<String, String> {
     let url = format!("http://127.0.0.1:{}/keymap", port);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .no_proxy()
-        .build();
+        .build()
+        .map_err(|_| "Failed to connect to server".to_string())?;
 
-    if let Ok(client) = client {
-        match client.post(&url).body(config.to_string()).send().await {
-            Ok(resp) => {
-                if let Ok(text) = resp.text().await {
-                    print!("{}", text);
-                }
-            }
-            Err(_) => eprintln!("Failed to connect to server"),
-        }
-    } else {
-        eprintln!("Failed to connect to server");
+    match client.post(&url).body(config.to_string()).send().await {
+        Ok(resp) => resp
+            .text()
+            .await
+            .map_err(|_| "Failed to read server response".to_string()),
+        Err(_) => Err("Failed to connect to server".to_string()),
     }
 }
 
@@ -742,22 +738,45 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
         Command::Start | Command::Stop => unreachable!(),
-        Command::Send { message } => {
-            send_command(port, message).await;
-        }
+        Command::Send { message } => match send_command(port, message).await {
+            Ok(resp) => print!("{}", resp),
+            Err(e) => eprintln!("{}", e),
+        },
         Command::Keymap { key, binding } => {
             let config = build_keymap_config(key, binding);
-            send_keymap(port, &config).await;
+            match send_keymap(port, &config).await {
+                Ok(resp) => print!("{}", resp),
+                Err(e) => eprintln!("{}", e),
+            }
         }
-        Command::Profile { name } => match profile_keymaps(name) {
-            Some(keymaps) => {
-                for (key, binding) in keymaps {
-                    let config = build_keymap_config(&key, &binding);
-                    send_keymap(port, &config).await;
+        Command::Profile { name } => {
+            let keymaps = match profile_keymaps(name) {
+                Some(k) => k,
+                None => {
+                    eprintln!("Unknown profile: '{}'. Available profiles: claude, codex", name);
+                    return;
+                }
+            };
+            for (key, binding) in keymaps {
+                let config = build_keymap_config(&key, &binding);
+                match send_keymap(port, &config).await {
+                    // The server replies "ok\n" on success; anything else is a failure.
+                    Ok(resp) if resp.trim() == "ok" => {}
+                    Ok(resp) => {
+                        eprintln!("Failed to apply '{}' profile: {}", name, resp.trim());
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to apply '{}' profile: {}", name, e);
+                        return;
+                    }
                 }
             }
-            None => log::error!("Unknown profile: '{}'. Available profiles: claude, codex", name),
-        },
+            // Show the confirmation on the keyboard display, too, and print it locally.
+            let message = profile_message(name);
+            let _ = send_command(port, &message).await;
+            println!("{}", message);
+        }
         Command::AsrConfig {
             clean: true,
             platform: _,
@@ -793,7 +812,7 @@ async fn forward_command(port: u16, cmd: &Command) {
             log::debug!("Hook input: {}", input);
             if let Some(msg) = format_claude_message(&input) {
                 log::info!("Hook formatted: {}", msg);
-                send_command(port, &msg).await;
+                let _ = send_command(port, &msg).await;
             }
         }
         Command::Codex => {
@@ -802,7 +821,7 @@ async fn forward_command(port: u16, cmd: &Command) {
             log::debug!("Codex hook input: {}", input);
             if let Some(msg) = format_codex_message(&input) {
                 log::info!("Codex hook formatted: {}", msg);
-                send_command(port, &msg).await;
+                let _ = send_command(port, &msg).await;
             }
         }
     }
@@ -827,6 +846,15 @@ fn profile_keymaps(name: &str) -> Option<Vec<(String, String)>> {
             ("YOLO".to_string(), "\"y\"".to_string()),
         ]),
         _ => None,
+    }
+}
+
+/// Friendly confirmation shown after a profile is applied.
+fn profile_message(name: &str) -> String {
+    match name.to_lowercase().as_str() {
+        "codex" => "✨ You're with Codex now".to_string(),
+        "claude" => "✨ You're with Claude Code now".to_string(),
+        other => format!("✨ Applied '{}' profile", other),
     }
 }
 
@@ -1274,6 +1302,12 @@ mod tests {
     #[test]
     fn unknown_profile_is_none() {
         assert!(profile_keymaps("nope").is_none());
+    }
+
+    #[test]
+    fn profile_messages() {
+        assert_eq!(profile_message("codex"), "✨ You're with Codex now");
+        assert_eq!(profile_message("claude"), "✨ You're with Claude Code now");
     }
 }
 
