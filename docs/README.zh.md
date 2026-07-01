@@ -81,6 +81,24 @@ vibekeys keymap <KEY> <BINDING>
 
 每次配置一个键，设备会合并到已有的按键映射中。
 
+### 应用按键映射 profile
+
+```bash
+vibekeys profile <NAME>
+```
+
+一条命令套用一组预设按键映射。两个 profile 都只修改 `CUSTOM` 和 `YOLO` 两个键，因此来回切换是干净的往返，不会影响其他键。
+
+| Profile | `CUSTOM` | `YOLO` |
+|---------|----------|--------|
+| `codex` | `/review` + 回车（一键代码审查） | `y`（批准） |
+| `claude` | `/compact` + 回车 | `Shift+Tab`（允许全部编辑） |
+
+```bash
+vibekeys profile codex    # 把键盘配成 Codex 用法
+vibekeys profile claude   # 切回 Claude Code
+```
+
 ## Keymap 详细说明
 
 ### 支持的按键

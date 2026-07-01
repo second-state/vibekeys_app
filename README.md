@@ -83,6 +83,24 @@ vibekeys keymap <KEY> <BINDING>
 
 Configures one key at a time. The device merges it into the existing keymap.
 
+### Apply a keymap profile
+
+```bash
+vibekeys profile <NAME>
+```
+
+Applies a predefined set of keymaps in one command. Both profiles touch only `CUSTOM` and `YOLO`, so switching between them is a clean round-trip and other keys are left untouched.
+
+| Profile | `CUSTOM` | `YOLO` |
+|---------|----------|--------|
+| `codex` | `/review` + Enter (one-key code review) | `y` (approve) |
+| `claude` | `/compact` + Enter | `Shift+Tab` (allow all edits) |
+
+```bash
+vibekeys profile codex    # set up the keyboard for Codex
+vibekeys profile claude   # switch back to Claude Code
+```
+
 ## Keymap Reference
 
 ### Supported Keys
