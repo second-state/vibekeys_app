@@ -82,6 +82,21 @@ enum Command {
         #[arg(long)]
         pass: Option<String>,
     },
+    /// Configure mic mode (ptt = push-to-talk, toggle = tap to start/stop)
+    MicModel {
+        /// "ptt" or "toggle" - omit for interactive mode
+        mode: Option<String>,
+    },
+    /// Whether to prefer the built-in ASR in keyboard mode
+    PreferBuiltinAsr {
+        /// "on" or "off" - omit for interactive mode
+        value: Option<String>,
+    },
+    /// Configure the server URL
+    ServerUrl {
+        /// server URL - omit for interactive mode
+        url: Option<String>,
+    },
 }
 
 // ===== Port =====
@@ -618,6 +633,41 @@ async fn write_config_field(
     }
 }
 
+async fn mic_model_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let mode = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["mode"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    let m: u8 = match mode.as_str() {
+        "ptt" => 0,
+        "toggle" => 1,
+        _ => return "error: mode must be 'ptt' or 'toggle'\n".to_string(),
+    };
+    write_config_field(&state, "mic_model", serde_json::json!(m)).await
+}
+
+async fn prefer_builtin_asr_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let value = match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => match v["value"].as_bool() {
+            Some(b) => b,
+            None => return "error: value must be a boolean (true/false)\n".to_string(),
+        },
+        Err(e) => return format!("error: invalid JSON: {}\n", e),
+    };
+    write_config_field(&state, "prefer_builtin_asr", serde_json::json!(value)).await
+}
+
+async fn server_url_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    let url = serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|v| v["url"].as_str().map(|s| s.to_string()))
+        .unwrap_or_default();
+    if url.is_empty() {
+        return "error: url is required\n".to_string();
+    }
+    write_config_field(&state, "server_url", serde_json::json!(url)).await
+}
+
 async fn run_server(port: u16, initial_cmds: Vec<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let notify = Arc::new(tokio::sync::Notify::new());
@@ -649,6 +699,9 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
         .route("/config", get(config_show_handler))
         .route("/asr-config", post(asr_config_handler))
         .route("/wifi-config", post(wifi_config_handler))
+        .route("/mic-model", post(mic_model_handler))
+        .route("/prefer-builtin-asr", post(prefer_builtin_asr_handler))
+        .route("/server-url", post(server_url_handler))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", port);
@@ -743,6 +796,15 @@ async fn post_to_server(port: u16, path: &str, body: &str) -> Result<String, Str
         .text()
         .await
         .map_err(|_| "Failed to read server response".to_string())
+}
+
+/// 把一个(已带参数的)命令经 server 转发;若 server 未运行则启动它并把命令作为 initial cmd。
+async fn run_interactive(port: u16, cmd: Command) {
+    if check_server(port).await {
+        forward_command(port, &cmd).await;
+    } else {
+        run_server(port, vec![cmd]).await;
+    }
 }
 
 /// 确保 server 在运行:已在跑返回 false;否则后台启动并等就绪,返回 true(调用方负责 shutdown)。
@@ -853,6 +915,41 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
             })
         }
         Command::WifiConfig { .. } => None, // WiFi config goes through HTTP (see main)
+        Command::MicModel { mode } => {
+            let m: u8 = match mode.as_deref() {
+                Some("ptt") => 0,
+                Some("toggle") => 1,
+                _ => return None, // Interactive / invalid handled elsewhere
+            };
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: CONFIG_ID,
+                data: config_patch("mic_model", serde_json::json!(m)),
+                reply: tx,
+            })
+        }
+        Command::PreferBuiltinAsr { value } => {
+            let b: bool = match value.as_deref() {
+                Some("on") => true,
+                Some("off") => false,
+                _ => return None,
+            };
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: CONFIG_ID,
+                data: config_patch("prefer_builtin_asr", serde_json::json!(b)),
+                reply: tx,
+            })
+        }
+        Command::ServerUrl { url } => {
+            let u = url?;
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: CONFIG_ID,
+                data: config_patch("server_url", serde_json::json!(u)),
+                reply: tx,
+            })
+        }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
@@ -953,6 +1050,41 @@ async fn forward_command(port: u16, cmd: &Command) {
         }
         Command::WifiConfig { .. } => {
             // WiFi config is handled directly in main() (it reads the existing list).
+        }
+        Command::MicModel { mode } => {
+            if let Some(m) = mode {
+                let body = serde_json::json!({"mode": m}).to_string();
+                match post_to_server(port, "/mic-model", &body).await {
+                    Ok(resp) => print!("{}", resp),
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+        }
+        Command::PreferBuiltinAsr { value } => {
+            if let Some(v) = value {
+                let b = match v.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    other => {
+                        eprintln!("invalid value '{}': expected on/off", other);
+                        return;
+                    }
+                };
+                let body = serde_json::json!({"value": b}).to_string();
+                match post_to_server(port, "/prefer-builtin-asr", &body).await {
+                    Ok(resp) => print!("{}", resp),
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
+        }
+        Command::ServerUrl { url } => {
+            if let Some(u) = url {
+                let body = serde_json::json!({"url": u}).to_string();
+                match post_to_server(port, "/server-url", &body).await {
+                    Ok(resp) => print!("{}", resp),
+                    Err(e) => eprintln!("{}", e),
+                }
+            }
         }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
@@ -1192,6 +1324,40 @@ fn interactive_wifi_config(current: &[(String, String)]) -> anyhow::Result<Vec<(
         _ => {}
     }
     Ok(list)
+}
+
+fn interactive_mic_model() -> anyhow::Result<String> {
+    let theme = ColorfulTheme::default();
+    let items = ["toggle (tap to start/stop)", "ptt (hold to talk)"];
+    let idx = Select::with_theme(&theme)
+        .with_prompt("Mic mode")
+        .items(&items)
+        .default(0)
+        .interact()?;
+    Ok(if idx == 0 { "toggle" } else { "ptt" }.to_string())
+}
+
+fn interactive_prefer_builtin_asr() -> anyhow::Result<bool> {
+    let theme = ColorfulTheme::default();
+    let items = [
+        "on (use built-in Whisper)",
+        "off (pass mic through to host)",
+    ];
+    let idx = Select::with_theme(&theme)
+        .with_prompt("Prefer built-in ASR")
+        .items(&items)
+        .default(0)
+        .interact()?;
+    Ok(idx == 0)
+}
+
+fn interactive_server_url() -> anyhow::Result<String> {
+    let theme = ColorfulTheme::default();
+    let url: String = Input::with_theme(&theme)
+        .with_prompt("Server URL")
+        .allow_empty(false)
+        .interact()?;
+    Ok(url)
 }
 
 fn format_claude_message(input: &str) -> Option<String> {
@@ -1598,6 +1764,50 @@ async fn main() {
         }
         if started {
             shutdown_server(port).await;
+        }
+        return;
+    }
+
+    // Handle interactive mic-model
+    if matches!(cli.command, Command::MicModel { mode: None }) {
+        match interactive_mic_model() {
+            Ok(mode) => run_interactive(port, Command::MicModel { mode: Some(mode) }).await,
+            Err(e) => {
+                log::error!("mic-model failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Handle interactive prefer-builtin-asr
+    if matches!(cli.command, Command::PreferBuiltinAsr { value: None }) {
+        match interactive_prefer_builtin_asr() {
+            Ok(value) => {
+                run_interactive(
+                    port,
+                    Command::PreferBuiltinAsr {
+                        value: Some(if value { "on" } else { "off" }.to_string()),
+                    },
+                )
+                .await
+            }
+            Err(e) => {
+                log::error!("prefer-builtin-asr failed: {}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    // Handle interactive server-url
+    if matches!(cli.command, Command::ServerUrl { url: None }) {
+        match interactive_server_url() {
+            Ok(url) => run_interactive(port, Command::ServerUrl { url: Some(url) }).await,
+            Err(e) => {
+                log::error!("server-url failed: {}", e);
+                std::process::exit(1);
+            }
         }
         return;
     }
