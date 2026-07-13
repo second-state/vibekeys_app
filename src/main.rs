@@ -24,9 +24,11 @@ const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
 const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
-const KEYMAP_ASR_CONFIG_ID: Uuid = Uuid::from_u128(0xfaf9e22c_e8fc_421b_afef_8b5236813fb1);
-const WIFI_SSID_ID: Uuid = Uuid::from_u128(0x1fda4d6e_2f14_42b0_96fa_453bed238375);
-const WIFI_PASS_ID: Uuid = Uuid::from_u128(0xa987ab18_a940_421a_a1d7_b94ee22bccbe);
+/// 统一配置特征值(新固件):读取返回整份快照,写入接收部分对象 patch。详见 docs/ble-config.md。
+const CONFIG_ID: Uuid = Uuid::from_u128(0xcef520a9_bcb5_4fc6_87f7_82804eee2b20);
+
+/// wifi_list 最多条数,与固件 MAX_WIFI_CREDS 一致。
+const MAX_WIFI_CREDS: usize = 8;
 
 // ===== CLI =====
 
@@ -180,16 +182,85 @@ async fn send_ble(p: &PlatformPeripheral, char_uuid: Uuid, data: &[u8]) -> anyho
     Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
 }
 
+async fn read_ble(p: &PlatformPeripheral, char_uuid: Uuid) -> anyhow::Result<Vec<u8>> {
+    for c in &p.characteristics() {
+        if c.uuid == char_uuid {
+            return Ok(p.read(c).await?);
+        }
+    }
+    Err(anyhow::anyhow!("Characteristic {} not found", char_uuid))
+}
+
+/// 把单个配置字段包成 CONFIG 部分对象 patch,例如 `config_patch("asr_config", v)` →
+/// `{"asr_config": v}`。设备只更新出现的字段。
+fn config_patch(field: &str, value: serde_json::Value) -> Vec<u8> {
+    serde_json::json!({ field: value }).to_string().into_bytes()
+}
+
+/// 从 CONFIG 快照 JSON 文本解析出 wifi_list(顺序即优先级)。
+fn parse_wifi_list(snapshot_json: &str) -> Vec<(String, String)> {
+    serde_json::from_str::<serde_json::Value>(snapshot_json)
+        .ok()
+        .and_then(|v| {
+            v.get("wifi_list").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .map(|c| {
+                        (
+                            c.get("ssid")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                            c.get("pass")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("")
+                                .to_string(),
+                        )
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// 把 (ssid, pass) 列表序列化成固件 wifi_list JSON。
+fn wifi_list_to_json(list: &[(String, String)]) -> serde_json::Value {
+    let arr: Vec<serde_json::Value> = list
+        .iter()
+        .map(|(s, p)| serde_json::json!({"ssid": s, "pass": p}))
+        .collect();
+    serde_json::Value::Array(arr)
+}
+
+/// 规整来自客户端的 wifi_list:丢弃空 ssid,截断到 MAX_WIFI_CREDS。
+fn sanitize_wifi_list(list: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    list.iter()
+        .filter_map(|c| {
+            let ssid = c.get("ssid").and_then(|v| v.as_str())?;
+            if ssid.is_empty() {
+                return None;
+            }
+            let pass = c.get("pass").and_then(|v| v.as_str()).unwrap_or("");
+            Some(serde_json::json!({"ssid": ssid, "pass": pass}))
+        })
+        .take(MAX_WIFI_CREDS)
+        .collect()
+}
+
+/// 经 server 的 BLE 任务读 CONFIG 快照里的 wifi_list。
+async fn read_wifi_list(ble_tx: &mpsc::Sender<BleCmd>) -> anyhow::Result<Vec<(String, String)>> {
+    let data = ble_read(ble_tx, CONFIG_ID).await?;
+    Ok(parse_wifi_list(&String::from_utf8_lossy(&data)))
+}
+
 enum BleCmd {
     Send {
         char_uuid: Uuid,
         data: Vec<u8>,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    WifiConfig {
-        ssid: String,
-        pass: Option<String>,
-        reply: oneshot::Sender<Result<(), String>>,
+    Read {
+        char_uuid: Uuid,
+        reply: oneshot::Sender<Result<Vec<u8>, String>>,
     },
 }
 
@@ -342,29 +413,14 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                 log::info!("send end");
                 let _ = reply.send(result.map_err(|e| e.to_string()));
             }
-            Some(SelectResult::BleCmd(BleCmd::WifiConfig { ssid, pass, reply })) => {
-                // Check connection before sending with 1s timeout
+            Some(SelectResult::BleCmd(BleCmd::Read { char_uuid, reply })) => {
                 let connected = check_connected(&peripheral).await;
-
                 if !connected {
-                    log::error!("BLE disconnected before send, exiting");
+                    log::error!("BLE disconnected before read, exiting");
                     let _ = reply.send(Err("BLE disconnected".to_string()));
                     return;
                 }
-
-                // Send SSID first
-                let ssid_result = send_ble(&peripheral, WIFI_SSID_ID, ssid.as_bytes()).await;
-                if ssid_result.is_err() {
-                    let _ = reply.send(ssid_result.map_err(|e| e.to_string()));
-                    continue;
-                }
-
-                // Then send password if provided
-                let result = if let Some(password) = pass {
-                    send_ble(&peripheral, WIFI_PASS_ID, password.as_bytes()).await
-                } else {
-                    Ok(())
-                };
+                let result = read_ble(&peripheral, char_uuid).await;
                 let _ = reply.send(result.map_err(|e| e.to_string()));
             }
             Some(SelectResult::AsrResult(asr_char, text)) => {
@@ -403,6 +459,26 @@ async fn ble_send(
     }
     match rx.await {
         Ok(Ok(())) => Ok("ok\n".to_string()),
+        Ok(Err(e)) => Err(anyhow::anyhow!("error: {}", e)),
+        Err(_) => Err(anyhow::anyhow!("error: no response")),
+    }
+}
+
+/// 经 server 的 BLE 任务读一个特征值(用于读 CONFIG 快照)。
+async fn ble_read(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid) -> anyhow::Result<Vec<u8>> {
+    let (tx, rx) = oneshot::channel();
+    if ble_tx
+        .send(BleCmd::Read {
+            char_uuid,
+            reply: tx,
+        })
+        .await
+        .is_err()
+    {
+        anyhow::bail!("Failed to send BLE read command");
+    }
+    match rx.await {
+        Ok(Ok(data)) => Ok(data),
         Ok(Err(e)) => Err(anyhow::anyhow!("error: {}", e)),
         Err(_) => Err(anyhow::anyhow!("error: no response")),
     }
@@ -456,7 +532,13 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
 }
 
 async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
-    let result = ble_send(&state.ble_tx, KEYMAP_ASR_CONFIG_ID, body.as_bytes()).await;
+    // body 是 ASR 内层对象 {platform,uri,api_key,model};包成 CONFIG patch {"asr_config": <body>}。
+    let value: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => return format!("error: invalid ASR config JSON: {}\n", e),
+    };
+    let payload = config_patch("asr_config", value);
+    let result = ble_send(&state.ble_tx, CONFIG_ID, &payload).await;
     // If BLE disconnected, shut down the server
     match result {
         Ok(result) => result,
@@ -469,44 +551,70 @@ async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) ->
 }
 
 async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
-    // Parse JSON with ssid and pass
-    if let Ok(config) = serde_json::from_str::<serde_json::Value>(&body) {
-        let ssid = config["ssid"].as_str();
-        let pass = config["pass"].as_str();
+    let req = match serde_json::from_str::<serde_json::Value>(&body) {
+        Ok(v) => v,
+        Err(e) => return format!("error: invalid JSON: {}\n", e),
+    };
 
-        let mut results = Vec::new();
+    // 整包写:{"wifi_list": [{ssid, pass}, ...]}(来自 TUI)。规整后落盘。
+    if let Some(list) = req.get("wifi_list").and_then(|v| v.as_array()) {
+        let patched = sanitize_wifi_list(list);
+        return write_config_field(&state, "wifi_list", serde_json::Value::Array(patched)).await;
+    }
 
-        // Send SSID first
-        if let Some(s) = ssid {
-            let result = ble_send(&state.ble_tx, WIFI_SSID_ID, s.as_bytes()).await;
-            let r_string = match result {
-                Ok(result) => result,
-                Err(e) => {
-                    log::error!("BLE disconnected: {}", e);
-                    state.shutdown_tx.notify_waiters();
-                    format!("error: {}\n", e)
-                }
-            };
-            results.push(r_string);
+    // 追加单条:{"ssid": "...", "pass": "..."}。读现有 list → 去重追加 → 写回。
+    let ssid = match req.get("ssid").and_then(|v| v.as_str()) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => {
+            return "error: expected {\"wifi_list\":[...]} or {\"ssid\":\"...\",\"pass\":\"...\"}\n"
+                .to_string();
         }
+    };
+    let pass = req
+        .get("pass")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
 
-        // Then send password
-        if let Some(p) = pass {
-            let result = ble_send(&state.ble_tx, WIFI_PASS_ID, p.as_bytes()).await;
-            let r_string = match result {
-                Ok(result) => result,
-                Err(e) => {
-                    log::error!("BLE disconnected: {}", e);
-                    state.shutdown_tx.notify_waiters();
-                    format!("error: {}\n", e)
-                }
-            };
-            results.push(r_string);
-        }
-
-        results.join(",")
+    let mut list = read_wifi_list(&state.ble_tx).await.unwrap_or_default();
+    if let Some(entry) = list.iter_mut().find(|(s, _)| s == &ssid) {
+        entry.1 = pass;
     } else {
-        "error: invalid JSON format, expected {\"ssid\": \"...\", \"pass\": \"...\"}\n".to_string()
+        if list.len() >= MAX_WIFI_CREDS {
+            return format!("error: max {} WiFi networks reached\n", MAX_WIFI_CREDS);
+        }
+        list.push((ssid, pass));
+    }
+    write_config_field(&state, "wifi_list", wifi_list_to_json(&list)).await
+}
+
+/// 读 CONFIG 特性,返回整份快照 JSON。
+async fn config_show_handler(State(state): State<Arc<AppState>>) -> String {
+    match ble_read(&state.ble_tx, CONFIG_ID).await {
+        Ok(data) => String::from_utf8_lossy(&data).to_string(),
+        Err(e) => {
+            log::error!("config read failed: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
+        }
+    }
+}
+
+/// 把单个 CONFIG 字段写成 patch 发下去,返回 handler 响应字符串。
+async fn write_config_field(
+    state: &Arc<AppState>,
+    field: &str,
+    value: serde_json::Value,
+) -> String {
+    let payload = config_patch(field, value);
+    let result = ble_send(&state.ble_tx, CONFIG_ID, &payload).await;
+    match result {
+        Ok(r) => r,
+        Err(e) => {
+            log::error!("BLE disconnected: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
+        }
     }
 }
 
@@ -538,6 +646,7 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
         .route("/shutdown", get(shutdown_handler))
         .route("/send", post(send_handler))
         .route("/keymap", post(keymap_handler))
+        .route("/config", get(config_show_handler))
         .route("/asr-config", post(asr_config_handler))
         .route("/wifi-config", post(wifi_config_handler))
         .with_state(state);
@@ -617,30 +726,68 @@ async fn send_asr_config(port: u16, config: &str) {
     }
 }
 
-async fn send_wifi_config(port: u16, ssid: &str, pass: Option<&str>) {
-    let url = format!("http://127.0.0.1:{}/wifi-config", port);
+/// POST 一个 JSON body 到本地 server 的某个端点,返回响应文本。
+async fn post_to_server(port: u16, path: &str, body: &str) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build()
+        .map_err(|_| "Failed to connect to server".to_string())?;
+    client
+        .post(&url)
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|_| "Failed to connect to server".to_string())?
+        .text()
+        .await
+        .map_err(|_| "Failed to read server response".to_string())
+}
+
+/// 确保 server 在运行:已在跑返回 false;否则后台启动并等就绪,返回 true(调用方负责 shutdown)。
+async fn ensure_server(port: u16) -> bool {
+    if check_server(port).await {
+        return false;
+    }
+    tokio::spawn(run_server(port, vec![]));
+    // BLE 连接 + axum 起来需要点时间,轮询 health(~15s 上限)。
+    for _ in 0..150 {
+        if check_server(port).await {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    true
+}
+
+async fn shutdown_server(port: u16) {
+    let url = format!("http://127.0.0.1:{}/shutdown", port);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .no_proxy()
         .build();
-
-    let config = serde_json::json!({
-        "ssid": ssid,
-        "pass": pass,
-    });
-
     if let Ok(client) = client {
-        match client.post(&url).body(config.to_string()).send().await {
-            Ok(resp) => {
-                if let Ok(text) = resp.text().await {
-                    print!("{}", text);
-                }
-            }
-            Err(_) => eprintln!("Failed to connect to server"),
-        }
-    } else {
-        eprintln!("Failed to connect to server");
+        let _ = client.get(&url).send().await;
     }
+}
+
+/// GET /config 拿整份快照 JSON(给本地 TUI 用)。
+async fn get_config_snapshot(port: u16) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}/config", port);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .no_proxy()
+        .build()
+        .map_err(|_| "Failed to connect to server".to_string())?;
+    client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| "Failed to connect to server".to_string())?
+        .text()
+        .await
+        .map_err(|_| "Failed to read server response".to_string())
 }
 
 fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
@@ -683,38 +830,29 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
             api_key,
             model,
         } => {
-            if clean {
-                let (tx, _) = oneshot::channel();
-                Some(BleCmd::Send {
-                    char_uuid: KEYMAP_ASR_CONFIG_ID,
-                    data: vec![],
-                    reply: tx,
-                })
+            // 写 CONFIG patch {"asr_config": {...}};clean 重置成空(新协议无删除语义,
+            // patch 合并时空字段会覆盖现有值)。
+            let asr_value = if clean {
+                serde_json::json!({"platform":"whisper","uri":"","api_key":"","model":""})
             } else if let Some(plat) = platform {
-                let config =
-                    build_asr_config(&plat, uri.as_deref(), api_key.as_deref(), model.as_deref());
-                let (tx, _) = oneshot::channel();
-                Some(BleCmd::Send {
-                    char_uuid: KEYMAP_ASR_CONFIG_ID,
-                    data: config.into_bytes(),
-                    reply: tx,
-                })
+                serde_json::from_str(&build_asr_config(
+                    &plat,
+                    uri.as_deref(),
+                    api_key.as_deref(),
+                    model.as_deref(),
+                ))
+                .ok()?
             } else {
-                None // Interactive mode handled in main()
-            }
+                return None; // Interactive mode handled in main()
+            };
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: CONFIG_ID,
+                data: config_patch("asr_config", asr_value),
+                reply: tx,
+            })
         }
-        Command::WifiConfig { ssid, pass } => {
-            if let Some(s) = ssid {
-                let (tx, _) = oneshot::channel();
-                Some(BleCmd::WifiConfig {
-                    ssid: s,
-                    pass,
-                    reply: tx,
-                })
-            } else {
-                None // Interactive mode handled in main()
-            }
-        }
+        Command::WifiConfig { .. } => None, // WiFi config goes through HTTP (see main)
         Command::Claude | Command::Hook => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
@@ -813,11 +951,8 @@ async fn forward_command(port: u16, cmd: &Command) {
             }
             // If platform is None, interactive mode is handled in main()
         }
-        Command::WifiConfig { ssid, pass } => {
-            if let Some(s) = ssid {
-                send_wifi_config(port, &s, pass.as_deref()).await;
-            }
-            // If ssid is None, interactive mode is handled in main()
+        Command::WifiConfig { .. } => {
+            // WiFi config is handled directly in main() (it reads the existing list).
         }
         Command::Claude | Command::Hook => {
             let mut input = String::new();
@@ -1003,24 +1138,60 @@ fn interactive_asr_config(
     Ok(("whisper".to_string(), uri, api_key, model))
 }
 
-/// Interactive WiFi configuration
-fn interactive_wifi_config() -> anyhow::Result<(String, Option<String>)> {
+/// 交互式编辑 wifi_list:展示现有网络,选择新增或删除,返回编辑后的列表。
+fn interactive_wifi_config(current: &[(String, String)]) -> anyhow::Result<Vec<(String, String)>> {
     let theme = ColorfulTheme::default();
 
-    // SSID
-    let ssid: String = Input::with_theme(&theme)
-        .with_prompt("WiFi SSID")
-        .allow_empty(false)
+    if current.is_empty() {
+        println!("No WiFi networks configured yet.");
+    } else {
+        println!("Current WiFi networks (priority order):");
+        for (i, (s, _)) in current.iter().enumerate() {
+            println!("  {}. {}", i + 1, s);
+        }
+    }
+
+    let action = Select::with_theme(&theme)
+        .with_prompt("Action")
+        .items(&["Add a network", "Remove a network"])
+        .default(0)
         .interact()?;
 
-    // Password
-    let pass = Password::with_theme(&theme)
-        .with_prompt("WiFi Password")
-        .allow_empty_password(true)
-        .interact()?;
-    let pass = if pass.is_empty() { None } else { Some(pass) };
-
-    Ok((ssid, pass))
+    let mut list: Vec<(String, String)> = current.to_vec();
+    match action {
+        0 => {
+            if list.len() >= MAX_WIFI_CREDS {
+                anyhow::bail!("already at max {} networks", MAX_WIFI_CREDS);
+            }
+            let ssid: String = Input::with_theme(&theme)
+                .with_prompt("WiFi SSID")
+                .allow_empty(false)
+                .interact()?;
+            let pass = Password::with_theme(&theme)
+                .with_prompt("WiFi Password (empty for none)")
+                .allow_empty_password(true)
+                .interact()?;
+            if let Some(entry) = list.iter_mut().find(|(s, _)| s == &ssid) {
+                entry.1 = pass; // 已存在则更新密码
+            } else {
+                list.push((ssid, pass));
+            }
+        }
+        1 => {
+            if list.is_empty() {
+                anyhow::bail!("no networks to remove");
+            }
+            let items: Vec<String> = list.iter().map(|(s, _)| s.clone()).collect();
+            let idx = Select::with_theme(&theme)
+                .with_prompt("Select network to remove")
+                .items(&items)
+                .default(0)
+                .interact()?;
+            list.remove(idx);
+        }
+        _ => {}
+    }
+    Ok(list)
 }
 
 fn format_claude_message(input: &str) -> Option<String> {
@@ -1280,81 +1451,6 @@ fn parse_key_binding(input: &str) -> serde_json::Value {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn codex_profile_bindings() {
-        let keymaps = profile_keymaps("codex").expect("codex profile exists");
-        let configs: Vec<String> = keymaps
-            .iter()
-            .map(|(k, b)| build_keymap_config(k, b))
-            .collect();
-
-        // CUSTOM types `/review` followed by Enter (the `\n` is unescaped to a newline).
-        assert_eq!(
-            configs[0],
-            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"}}"#
-        );
-        // YOLO is an alias for the physical SWITCH key; it types `y`.
-        assert_eq!(
-            configs[1],
-            r#"{"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
-        );
-    }
-
-    #[test]
-    fn codex_profile_is_one_multi_key_write() {
-        // A profile is applied as a single message carrying every binding, not
-        // one round-trip per key.
-        let keymaps = profile_keymaps("codex").expect("codex profile exists");
-        let config = build_keymap_configs(&keymaps);
-        assert_eq!(
-            config,
-            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"},"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
-        );
-    }
-
-    #[test]
-    fn claude_profile_restores_codex_keys() {
-        let keymaps = profile_keymaps("claude").expect("claude profile exists");
-        let by_key: std::collections::HashMap<String, String> = keymaps
-            .iter()
-            .map(|(k, b)| (k.clone(), build_keymap_config(k, b)))
-            .collect();
-
-        // The claude profile restores exactly the two keys the codex profile overrides.
-        let keys: std::collections::HashSet<&str> =
-            keymaps.iter().map(|(k, _)| k.as_str()).collect();
-        assert_eq!(
-            keys,
-            ["CUSTOM", "YOLO"]
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>()
-        );
-        assert_eq!(
-            by_key["CUSTOM"],
-            r#"{"CUSTOM":{"raw":"\"/compact\\n\"","type":"text","value":"/compact\n"}}"#
-        );
-        assert_eq!(
-            by_key["YOLO"],
-            r#"{"SWITCH":{"key":"TAB","modifiers":["shift"],"raw":"Shift+Tab","type":"combo"}}"#
-        );
-    }
-
-    #[test]
-    fn unknown_profile_is_none() {
-        assert!(profile_keymaps("nope").is_none());
-    }
-
-    #[test]
-    fn profile_messages() {
-        assert_eq!(profile_message("codex"), "✨ You're with Codex now");
-        assert_eq!(profile_message("claude"), "✨ You're with Claude Code now");
-    }
-}
-
 // ===== Main =====
 
 fn init_logger() {
@@ -1474,27 +1570,34 @@ async fn main() {
         return;
     }
 
-    // Handle interactive WiFi config
-    if matches!(cli.command, Command::WifiConfig { ssid: None, .. }) {
-        match interactive_wifi_config() {
-            Ok((ssid, pass)) => {
-                if check_server(port).await {
-                    send_wifi_config(port, &ssid, pass.as_deref()).await;
-                } else {
-                    run_server(
-                        port,
-                        vec![Command::WifiConfig {
-                            ssid: Some(ssid),
-                            pass,
-                        }],
-                    )
-                    .await;
-                }
+    // Handle WiFi config — always via server HTTP (it must read the existing list first),
+    // auto-starting and shutting down a temporary server if one isn't already running.
+    if let Command::WifiConfig { ssid, pass } = cli.command {
+        let started = ensure_server(port).await;
+        let result = if let Some(s) = ssid {
+            // 直接追加单条。
+            let body = serde_json::json!({ "ssid": s, "pass": pass }).to_string();
+            post_to_server(port, "/wifi-config", &body).await
+        } else {
+            // 交互式:读现有 list → TUI → 整包写回。
+            match get_config_snapshot(port).await {
+                Ok(text) => match interactive_wifi_config(&parse_wifi_list(&text)) {
+                    Ok(new_list) => {
+                        let body = serde_json::json!({ "wifi_list": wifi_list_to_json(&new_list) })
+                            .to_string();
+                        post_to_server(port, "/wifi-config", &body).await
+                    }
+                    Err(e) => Err(e.to_string()),
+                },
+                Err(e) => Err(e),
             }
-            Err(e) => {
-                log::error!("WiFi config failed: {}", e);
-                std::process::exit(1);
-            }
+        };
+        match result {
+            Ok(r) => print!("{}", r),
+            Err(e) => eprintln!("{}", e),
+        }
+        if started {
+            shutdown_server(port).await;
         }
         return;
     }
@@ -1525,5 +1628,80 @@ async fn main() {
             other => vec![other],
         };
         run_server(port, initial_cmds).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_profile_bindings() {
+        let keymaps = profile_keymaps("codex").expect("codex profile exists");
+        let configs: Vec<String> = keymaps
+            .iter()
+            .map(|(k, b)| build_keymap_config(k, b))
+            .collect();
+
+        // CUSTOM types `/review` followed by Enter (the `\n` is unescaped to a newline).
+        assert_eq!(
+            configs[0],
+            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"}}"#
+        );
+        // YOLO is an alias for the physical SWITCH key; it types `y`.
+        assert_eq!(
+            configs[1],
+            r#"{"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
+        );
+    }
+
+    #[test]
+    fn codex_profile_is_one_multi_key_write() {
+        // A profile is applied as a single message carrying every binding, not
+        // one round-trip per key.
+        let keymaps = profile_keymaps("codex").expect("codex profile exists");
+        let config = build_keymap_configs(&keymaps);
+        assert_eq!(
+            config,
+            r#"{"CUSTOM":{"raw":"\"/review\\n\"","type":"text","value":"/review\n"},"SWITCH":{"raw":"\"y\"","type":"text","value":"y"}}"#
+        );
+    }
+
+    #[test]
+    fn claude_profile_restores_codex_keys() {
+        let keymaps = profile_keymaps("claude").expect("claude profile exists");
+        let by_key: std::collections::HashMap<String, String> = keymaps
+            .iter()
+            .map(|(k, b)| (k.clone(), build_keymap_config(k, b)))
+            .collect();
+
+        // The claude profile restores exactly the two keys the codex profile overrides.
+        let keys: std::collections::HashSet<&str> =
+            keymaps.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["CUSTOM", "YOLO"]
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>()
+        );
+        assert_eq!(
+            by_key["CUSTOM"],
+            r#"{"CUSTOM":{"raw":"\"/compact\\n\"","type":"text","value":"/compact\n"}}"#
+        );
+        assert_eq!(
+            by_key["YOLO"],
+            r#"{"SWITCH":{"key":"TAB","modifiers":["shift"],"raw":"Shift+Tab","type":"combo"}}"#
+        );
+    }
+
+    #[test]
+    fn unknown_profile_is_none() {
+        assert!(profile_keymaps("nope").is_none());
+    }
+
+    #[test]
+    fn profile_messages() {
+        assert_eq!(profile_message("codex"), "✨ You're with Codex now");
+        assert_eq!(profile_message("claude"), "✨ You're with Claude Code now");
     }
 }
