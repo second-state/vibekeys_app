@@ -300,13 +300,13 @@ vibekeys asr-config --uri "https://api.openai.com/v1/audio/transcriptions" --api
 
 ## WiFi Configuration
 
-Configure WiFi settings for the device:
+The device stores up to 8 WiFi networks as a priority-ordered list. Interactive mode shows the current list and lets you add or remove a network; the direct form appends (or updates) one network.
 
 ```bash
-# Interactive mode - prompts for SSID and password
+# Interactive TUI: list current networks, then add or remove
 vibekeys wifi-config
 
-# Direct configuration
+# Direct: add (or update) one network
 vibekeys wifi-config <SSID> --pass <PASSWORD>
 
 # Open network (no password)
@@ -316,14 +316,52 @@ vibekeys wifi-config MyNetwork
 ### Examples
 
 ```bash
-# Interactive mode
+# Interactive: add / remove from the list
 vibekeys wifi-config
 
-# Configure with password
+# Add a network with a password
 vibekeys wifi-config "MyWiFi-5G" --pass "mypassword"
 
-# Configure open network
+# Add an open network
 vibekeys wifi-config "PublicWiFi"
+```
+
+## Mic Mode Configuration
+
+Configure the microphone trigger mode in keyboard mode:
+
+```bash
+# Interactive mode - select toggle or ptt
+vibekeys mic-model
+
+# Direct configuration
+vibekeys mic-model toggle   # tap to start/stop
+vibekeys mic-model ptt      # push to talk (hold)
+```
+
+## Prefer Built-in ASR
+
+In keyboard mode, choose whether to use the device's built-in ASR (Whisper) or pass the mic through to the host (which triggers the host's own dictation):
+
+```bash
+# Interactive mode
+vibekeys prefer-builtin-asr
+
+# Direct configuration
+vibekeys prefer-builtin-asr on     # use built-in Whisper
+vibekeys prefer-builtin-asr off    # pass mic through to host
+```
+
+## Server URL Configuration
+
+Configure the server URL:
+
+```bash
+# Interactive mode
+vibekeys server-url
+
+# Direct configuration
+vibekeys server-url https://example.com
 ```
 
 ## HTTP API
@@ -345,11 +383,28 @@ curl -X POST http://127.0.0.1:42837/asr-config -d '{
   "model": "whisper-1"
 }'
 
-# Configure WiFi
+# Configure WiFi (append/update one network)
 curl -X POST http://127.0.0.1:42837/wifi-config -d '{
   "ssid": "MyWiFi",
   "pass": "password"
 }'
+
+# Replace the whole wifi_list (priority order, max 8)
+curl -X POST http://127.0.0.1:42837/wifi-config -d '{
+  "wifi_list": [{"ssid":"A","pass":"a"},{"ssid":"B","pass":""}]
+}'
+
+# Read the full config snapshot (wifi_list / server_url / asr_config / mic_model / prefer_builtin_asr)
+curl http://127.0.0.1:42837/config
+
+# Configure mic mode (toggle | ptt)
+curl -X POST http://127.0.0.1:42837/mic-model -d '{"mode":"toggle"}'
+
+# Prefer built-in ASR on/off
+curl -X POST http://127.0.0.1:42837/prefer-builtin-asr -d '{"value":true}'
+
+# Configure server URL
+curl -X POST http://127.0.0.1:42837/server-url -d '{"url":"https://example.com"}'
 ```
 
 ## ASR Result Handling
