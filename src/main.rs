@@ -3,7 +3,7 @@ use arboard::Clipboard;
 use axum::{
     extract::State,
     routing::{get, post},
-    Router,
+    Json, Router,
 };
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
@@ -96,6 +96,15 @@ enum Command {
     ServerUrl {
         /// server URL - omit for interactive mode
         url: Option<String>,
+    },
+    /// Send a plain text notification to the keyboard display
+    Notify { message: String },
+    /// Send one multi-session status event (sid + project + status, no text)
+    Session {
+        /// Short session id (first 8 chars of the real session id)
+        sid: String,
+        /// Status: work | tool | post | perm | note | done | err | end
+        status: String,
     },
 }
 
@@ -520,8 +529,96 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
     "shutting down\n".to_string()
 }
 
+/// 多会话状态事件,发到 KEYBOARD_DISPLAY 特性。设备端解析 JSON 后按 `type`
+/// 分流:`session` 走多会话表,其他内容按纯文本上屏。协议见 docs/session-events.md。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct SessionEvent {
+    #[serde(rename = "type")]
+    kind: String,
+    ver: u8,
+    /// session-id 前 8 位(键盘上显示用的短码)
+    sid: String,
+    /// workspace 路径最后一段(项目名)
+    proj: String,
+    /// 状态:work | tool | post | perm | note | done | err | end
+    st: String,
+}
+
+impl SessionEvent {
+    fn new(sid: &str, proj: &str, st: &str) -> Self {
+        Self {
+            kind: "session".to_string(),
+            ver: 1,
+            sid: session_short_id(sid).to_string(),
+            proj: proj.to_string(),
+            st: st.to_string(),
+        }
+    }
+
+    fn to_payload(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+}
+
+fn json_payload(ev: &SessionEvent) -> String {
+    serde_json::to_string(ev).unwrap_or_default()
+}
+
+/// 构造一条手工 session 事件(`session` 子命令),proj 取当前工作目录 basename。
+fn session_event_cli(sid: &str, st: &str) -> anyhow::Result<SessionEvent> {
+    const STATUSES: [&str; 8] = ["work", "tool", "post", "perm", "note", "done", "err", "end"];
+    if !STATUSES.contains(&st) {
+        anyhow::bail!(
+            "Invalid status '{}'. Valid statuses: {}",
+            st,
+            STATUSES.join(" ")
+        );
+    }
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    Ok(SessionEvent::new(sid, &workspace_name(&cwd), st))
+}
+
+/// 取路径最后一段作为项目名(容忍尾部斜杠)。
+fn workspace_name(path: &str) -> &str {
+    let trimmed = path.trim_end_matches('/');
+    match trimmed.rsplit_once('/') {
+        Some((_, last)) if !last.is_empty() => last,
+        _ => trimmed,
+    }
+}
+
+/// session-id 截前 8 位作为显示短码;不足 8 位则原样返回。
+fn session_short_id(sid: &str) -> &str {
+    if sid.len() > 8 {
+        &sid[..8]
+    } else {
+        sid
+    }
+}
+
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
+    // If BLE disconnected, shut down the server
+    match result {
+        Ok(result) => result,
+        Err(e) => {
+            log::error!("BLE disconnected: {}", e);
+            state.shutdown_tx.notify_waiters();
+            format!("error: {}\n", e)
+        }
+    }
+}
+
+/// 与 `send_handler` 相同,但请求体是 JSON 结构体(`SessionEvent`),
+/// 反序列化失败返回 400。发给设备的仍是序列化后的紧凑 JSON。
+async fn send_json_handler(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<SessionEvent>,
+) -> String {
+    let data = body.to_payload();
+    let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, &data).await;
     // If BLE disconnected, shut down the server
     match result {
         Ok(result) => result,
@@ -702,6 +799,7 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
         .route("/mic-model", post(mic_model_handler))
         .route("/prefer-builtin-asr", post(prefer_builtin_asr_handler))
         .route("/server-url", post(server_url_handler))
+        .route("/send-json", post(send_json_handler))
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", port);
@@ -954,12 +1052,12 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             log::debug!("Hook input: {}", input);
-            format_claude_message(&input).map(|msg| {
-                log::info!("Hook formatted: {}", msg);
+            claude_event(&input).map(|ev| {
+                log::info!("Hook event: {:?}", ev);
                 let (tx, _) = oneshot::channel();
                 BleCmd::Send {
                     char_uuid: KEYBOARD_DISPLAY_ID,
-                    data: msg.into_bytes(),
+                    data: ev.to_payload(),
                     reply: tx,
                 }
             })
@@ -968,16 +1066,39 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             log::debug!("Codex hook input: {}", input);
-            format_codex_message(&input).map(|msg| {
-                log::info!("Codex hook formatted: {}", msg);
+            codex_event(&input).map(|ev| {
+                log::info!("Codex hook event: {:?}", ev);
                 let (tx, _) = oneshot::channel();
                 BleCmd::Send {
                     char_uuid: KEYBOARD_DISPLAY_ID,
-                    data: msg.into_bytes(),
+                    data: ev.to_payload(),
                     reply: tx,
                 }
             })
         }
+        Command::Notify { message } => {
+            let (tx, _) = oneshot::channel();
+            Some(BleCmd::Send {
+                char_uuid: KEYBOARD_DISPLAY_ID,
+                data: message.into_bytes(),
+                reply: tx,
+            })
+        }
+        Command::Session { sid, status } => match session_event_cli(&sid, &status) {
+            Ok(ev) => {
+                log::info!("Session event: {:?}", ev);
+                let (tx, _) = oneshot::channel();
+                Some(BleCmd::Send {
+                    char_uuid: KEYBOARD_DISPLAY_ID,
+                    data: ev.to_payload(),
+                    reply: tx,
+                })
+            }
+            Err(e) => {
+                eprintln!("{}", e);
+                None
+            }
+        },
     }
 }
 
@@ -1090,20 +1211,31 @@ async fn forward_command(port: u16, cmd: &Command) {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             log::debug!("Hook input: {}", input);
-            if let Some(msg) = format_claude_message(&input) {
-                log::info!("Hook formatted: {}", msg);
-                let _ = send_command(port, &msg).await;
+            if let Some(ev) = claude_event(&input) {
+                log::info!("Hook event: {:?}", ev);
+                let _ = post_to_server(port, "/send-json", &json_payload(&ev)).await;
             }
         }
         Command::Codex => {
             let mut input = String::new();
             io::stdin().read_to_string(&mut input).ok();
             log::debug!("Codex hook input: {}", input);
-            if let Some(msg) = format_codex_message(&input) {
-                log::info!("Codex hook formatted: {}", msg);
-                let _ = send_command(port, &msg).await;
+            if let Some(ev) = codex_event(&input) {
+                log::info!("Codex hook event: {:?}", ev);
+                let _ = post_to_server(port, "/send-json", &json_payload(&ev)).await;
             }
         }
+        Command::Notify { message } => match send_command(port, &message).await {
+            Ok(resp) => print!("{}", resp),
+            Err(e) => eprintln!("{}", e),
+        },
+        Command::Session { sid, status } => match session_event_cli(sid, &status) {
+            Ok(ev) => match post_to_server(port, "/send-json", &json_payload(&ev)).await {
+                Ok(resp) => print!("{}", resp),
+                Err(e) => eprintln!("{}", e),
+            },
+            Err(e) => eprintln!("{}", e),
+        },
     }
 }
 
@@ -1360,85 +1492,53 @@ fn interactive_server_url() -> anyhow::Result<String> {
     Ok(url)
 }
 
-fn format_claude_message(input: &str) -> Option<String> {
+/// 把 Claude Code 的 hook JSON 转成 SessionEvent。返回 None 表示该输入不产生事件
+/// (非 JSON、或是不需要上屏的事件类型),调用方应静默忽略。
+fn claude_event(input: &str) -> Option<SessionEvent> {
     let hook: serde_json::Value = serde_json::from_str(input).ok()?;
     let event = hook["hook_event_name"].as_str().unwrap_or("");
+    let sid = hook["session_id"].as_str().unwrap_or("");
+    let proj = workspace_name(hook["cwd"].as_str().unwrap_or(""));
+    let ev = |st: &str| SessionEvent::new(sid, proj, st);
     Some(match event {
-        "UserPromptSubmit" => {
-            let prompt = hook["prompt"].as_str().unwrap_or("");
-            format!("[user] {}", truncate(prompt, 80))
-        }
-        "Stop" => {
-            let msg = hook["last_assistant_message"].as_str().unwrap_or("");
-            if msg.is_empty() {
-                "[stopped]".to_string()
-            } else {
-                format!("[done]\n{}", truncate(msg, 150))
+        "UserPromptSubmit" => ev("work"),
+        "Stop" => ev("done"),
+        "Notification" => {
+            // hooks.json 已用 matcher 过滤,只有这两类会进来;其余类型不上屏。
+            match hook["notification_type"].as_str().unwrap_or("") {
+                "permission_prompt" => ev("perm"),
+                "idle_prompt" => ev("note"),
+                _ => return None,
             }
         }
-        "Notification" => {
-            let msg = hook["message"].as_str().unwrap_or("");
-            format!("[notify] {}", truncate(msg, 80))
-        }
-        "PreToolUse" => {
-            let tool = hook["tool_name"].as_str().unwrap_or("");
-            format!("[tool] {}", tool)
-        }
-        "PostToolUse" => {
-            let tool = hook["tool_name"].as_str().unwrap_or("");
-            format!("[done] {}", tool)
-        }
-        "SessionStart" => "[working]".to_string(),
-        "StopFailure" => {
-            let error = hook["error"].as_str().unwrap_or("unknown");
-            format!("[error] {}", error)
-        }
+        "PreToolUse" => ev("tool"),
+        "PostToolUse" => ev("post"),
+        "StopFailure" => ev("err"),
+        "SessionStart" => ev("work"),
         _ => return None,
     })
 }
 
-fn format_codex_message(input: &str) -> Option<String> {
+/// 把 Codex 的 hook JSON 转成 SessionEvent。语义与 `claude_event` 一致。
+fn codex_event(input: &str) -> Option<SessionEvent> {
     let hook: serde_json::Value = serde_json::from_str(input).ok()?;
     let event = hook["hook_event_name"].as_str().unwrap_or("");
+    let sid = hook["session_id"].as_str().unwrap_or("");
+    let proj = workspace_name(hook["cwd"].as_str().unwrap_or(""));
+    let ev = |st: &str| SessionEvent::new(sid, proj, st);
     Some(match event {
-        "UserPromptSubmit" => {
-            let prompt = hook["prompt"].as_str().unwrap_or("");
-            format!("[user] {}", truncate(prompt, 80))
-        }
-        "Stop" => {
-            let msg = hook["last_assistant_message"].as_str().unwrap_or("");
-            if msg.is_empty() {
-                "[stopped]".to_string()
-            } else {
-                format!("[done]\n{}", truncate(msg, 150))
-            }
-        }
-        "PreToolUse" => {
-            let tool = hook["tool_name"].as_str().unwrap_or("");
-            format!("[tool] {}", tool)
-        }
-        "PostToolUse" => {
-            let tool = hook["tool_name"].as_str().unwrap_or("");
-            format!("[done] {}", tool)
-        }
-        "SessionStart" => "[working]".to_string(),
-        "PermissionRequest" => {
-            let tool = hook["tool_name"].as_str().unwrap_or("");
-            format!("[perm] {}", tool)
-        }
+        "UserPromptSubmit" => ev("work"),
+        "Stop" => ev("done"),
+        "PreToolUse" => ev("tool"),
+        "PostToolUse" => ev("post"),
+        "PermissionRequest" => ev("perm"),
+        "SessionStart" => ev("work"),
+        "SubagentStop" => ev("post"),
         _ => return None,
     })
 }
 
 // ===== Parsing Utilities =====
-
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len])
-    }
-}
 
 fn unescape_string(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
@@ -1913,5 +2013,105 @@ mod tests {
     fn profile_messages() {
         assert_eq!(profile_message("codex"), "✨ You're with Codex now");
         assert_eq!(profile_message("claude"), "✨ You're with Claude Code now");
+    }
+
+    #[test]
+    fn session_short_id_takes_first_eight_chars() {
+        assert_eq!(
+            session_short_id("0aca72b2-9f2e-46b3-87f5-5d480aa88820"),
+            "0aca72b2"
+        );
+        // Short ids pass through unchanged.
+        assert_eq!(session_short_id("abcd1234"), "abcd1234");
+        assert_eq!(session_short_id(""), "");
+    }
+
+    #[test]
+    fn workspace_name_takes_last_segment() {
+        assert_eq!(workspace_name("/Users/x/vibekeys_app"), "vibekeys_app");
+        assert_eq!(workspace_name("/Users/x/vibekeys_app/"), "vibekeys_app");
+        // Degenerate paths just yield an empty name.
+        assert_eq!(workspace_name("/"), "");
+        assert_eq!(workspace_name(""), "");
+    }
+
+    #[test]
+    fn claude_pre_tool_use_event_carries_sid_and_project() {
+        let input = r#"{
+            "hook_event_name": "PreToolUse",
+            "session_id": "0aca72b2-9f2e-46b3-87f5-5d480aa88820",
+            "cwd": "/Users/x/vibekeys_app",
+            "tool_name": "Edit"
+        }"#;
+        let ev = claude_event(input).expect("event");
+        assert_eq!(ev.kind, "session");
+        assert_eq!(ev.ver, 1);
+        assert_eq!(ev.sid, "0aca72b2");
+        assert_eq!(ev.proj, "vibekeys_app");
+        assert_eq!(ev.st, "tool");
+        // Wire format: compact JSON with the session marker first, no msg field.
+        let payload = String::from_utf8(ev.to_payload()).unwrap();
+        assert!(payload.starts_with(r#"{"type":"session""#));
+        assert!(!payload.contains("msg"));
+        assert!(!payload.contains("null"));
+    }
+
+    #[test]
+    fn claude_stop_maps_to_done() {
+        let input = r#"{
+            "hook_event_name": "Stop",
+            "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "cwd": "/tmp/demo",
+            "last_assistant_message": {
+                "role": "assistant",
+                "content": [{ "type": "text", "text": "All tests passed" }]
+            }
+        }"#;
+        let ev = claude_event(input).expect("event");
+        assert_eq!(ev.st, "done");
+    }
+
+    #[test]
+    fn codex_stop_handles_null_message() {
+        let input = r#"{
+            "hook_event_name": "Stop",
+            "session_id": "019f84955ef57b22a3c8ffd4bf90b7d4",
+            "cwd": "/tmp/demo/",
+            "last_assistant_message": null
+        }"#;
+        let ev = codex_event(input).expect("event");
+        assert_eq!(ev.st, "done");
+    }
+
+    #[test]
+    fn non_json_hook_input_is_ignored() {
+        assert!(claude_event("not json").is_none());
+        assert!(codex_event("").is_none());
+        assert!(claude_event(r#"{"hook_event_name":"PreCompact"}"#).is_none());
+    }
+
+    #[test]
+    fn claude_notification_types_map_to_statuses() {
+        let base = |ty: &str| {
+            format!(
+                r#"{{"hook_event_name":"Notification","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","cwd":"/tmp/demo","notification_type":"{}","message":"raw message"}}"#,
+                ty
+            )
+        };
+        let ev = claude_event(&base("permission_prompt")).expect("event");
+        assert_eq!(ev.st, "perm");
+
+        let ev = claude_event(&base("idle_prompt")).expect("event");
+        assert_eq!(ev.st, "note");
+
+        // Other types are filtered out by the hooks.json matcher; even if one
+        // slips through (older config), it produces no event.
+        assert!(claude_event(&base("auth_success")).is_none());
+    }
+
+    #[test]
+    fn session_rejects_unknown_status() {
+        assert!(session_event_cli("abcd1234", "nope").is_err());
+        assert!(session_event_cli("abcd1234", "end").is_ok());
     }
 }

@@ -208,7 +208,7 @@ vibekeys keymap BACKSPACE Backspace
 
 ## Hook 模式
 
-从 stdin 读取 Claude Code hook JSON 事件，转发到键盘显示。用于 Claude Code 的 hooks 集成。
+从 stdin 读取 hook JSON 事件,提取会话短码、workspace 名和状态,转发为结构化的多会话事件到键盘。设备端按会话维护多条目,可同时显示多个 agent 会话。线格式见 [session-events.md](session-events.md)。
 
 ```bash
 # For Claude Code (别名: hook)
@@ -220,15 +220,32 @@ vibekeys codex
 
 ### 支持的事件
 
-| 事件 | 显示内容 |
-|------|----------|
-| `UserPromptSubmit` | `[user] <prompt 前80字符>` |
-| `Stop` | `[stopped]` 或 `[done] <最后消息>` |
-| `Notification` | `[notify] <消息前80字符>` |
-| `PreToolUse` | `[tool] <工具名>` |
-| `PostToolUse` | `[done] <工具名>` |
-| `SessionStart` | `[working]` |
-| `StopFailure` | `[error] <错误类型>` |
+| 事件 | 发送的状态 |
+|------|-----------|
+| `UserPromptSubmit` / `SessionStart` | `work` |
+| `PreToolUse` | `tool` |
+| `PostToolUse` / `SubagentStop`(Codex) | `post` |
+| `Notification`(`permission_prompt`)/ `PermissionRequest`(Codex) | `perm` |
+| `Notification`(`idle_prompt`) | `note` |
+| `Stop` | `done` |
+| `StopFailure` | `err` |
+
+> Claude hooks 配置用 matcher `permission_prompt|idle_prompt` 过滤了 `Notification`,其他通知类型不会触发命令。长时间不活跃的会话由设备端超时自动移除。
+
+### 手工发送状态(调试)
+
+不经过 hooks,直接发一条会话事件,用于测试多会话显示:
+
+```bash
+# vibekeys session <会话短码> <状态>
+vibekeys session abcd1234 tool
+```
+
+项目名取自当前工作目录。可用状态:`work`、`tool`、`post`、`perm`、`note`、`done`、`err`、`end`。
+
+(发纯文本请用 `vibekeys notify "文本"` 或 `vibekeys send "文本"`。)
+
+项目名取自当前工作目录。可用状态:`work`、`tool`、`post`、`perm`、`note`、`done`、`err`、`end`。
 
 ### Claude Code 配置示例
 
@@ -249,6 +266,19 @@ vibekeys codex
     ],
     "Notification": [
       {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [{ "type": "command", "command": "vibekeys hook" }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "vibekeys hook" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
         "hooks": [{ "type": "command", "command": "vibekeys hook" }]
       }
     ]

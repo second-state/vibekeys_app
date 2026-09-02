@@ -71,6 +71,22 @@ vibekeys send "Hello World"
 
 The server connects via BLE and stays running for subsequent commands.
 
+### Send a multi-session status (debugging)
+
+Send a structured session event (sid + project + status, no text) for the
+keyboard's multi-session list:
+
+```bash
+# vibekeys session <sid> <status>
+vibekeys session abcd1234 tool
+```
+
+(Use `vibekeys notify "text"` or `vibekeys send "text"` for plain text messages.)
+
+Valid statuses: `work`, `tool`, `post`, `perm`, `note`, `done`, `err`, `end`
+(`end` removes the session from the display). The project name is taken from
+the current working directory. See `docs/session-events.md` for the wire format.
+
 ### Configure key mapping
 
 Map a physical key to a keyboard shortcut or text macro:
@@ -175,7 +191,10 @@ vibekeys wifi-config "PublicWiFi"
 
 ### Hook Mode (for Claude Code / Codex integration)
 
-Reads hook JSON events from stdin and forwards them to the keyboard display:
+Reads hook JSON events from stdin, extracts the session id, workspace name, and status,
+and forwards a structured multi-session event to the keyboard. To install the hooks,
+copy `vibekeys_plugin/hooks/hooks.json` (Claude Code) or `codex-hooks.json` (Codex)
+into the respective settings, or add the events below to `.claude/settings.json`.
 
 ```bash
 # For Claude Code (alias: hook)
@@ -184,6 +203,10 @@ vibekeys claude
 # For Codex
 vibekeys codex
 ```
+
+Events handled: UserPromptSubmit, SessionStart, PreToolUse, PostToolUse, Stop,
+Notification (only `permission_prompt` / `idle_prompt`), PermissionRequest (Codex),
+SubagentStop (Codex), StopFailure. See `docs/session-events.md` for the wire format.
 
 ## Supported Keys
 

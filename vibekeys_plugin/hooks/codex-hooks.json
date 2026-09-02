@@ -5,7 +5,8 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "vibekeys codex &> /dev/null &"
+                        "command": "vibekeys codex",
+                        "async": true
                     }
                 ]
             }
@@ -15,7 +16,8 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "vibekeys codex &> /dev/null &"
+                        "command": "vibekeys codex",
+                        "async": true
                     }
                 ]
             }
@@ -26,7 +28,19 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "vibekeys codex &> /dev/null &"
+                        "command": "vibekeys codex",
+                        "async": true
+                    }
+                ]
+            }
+        ],
+        "PermissionRequest": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "vibekeys codex",
+                        "async": true
                     }
                 ]
             }
@@ -37,7 +51,8 @@
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "vibekeys codex &> /dev/null &"
+                        "command": "vibekeys codex",
+                        "async": true
                     }
                 ]
             }

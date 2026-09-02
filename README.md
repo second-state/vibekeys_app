@@ -210,7 +210,10 @@ vibekeys keymap BACKSPACE Backspace
 
 ## Hook Mode
 
-Reads hook JSON events from stdin and forwards them to the keyboard display.
+Reads hook JSON events from stdin, extracts the session id (short code), workspace name, and status,
+and forwards a structured multi-session event to the keyboard. The device keeps one entry per session
+and can display several agent sessions at once. See [docs/session-events.md](docs/session-events.md)
+for the wire format.
 
 ```bash
 # For Claude Code (alias: hook)
@@ -222,15 +225,35 @@ vibekeys codex
 
 ### Supported Events
 
-| Event | Display |
-|-------|---------|
-| `UserPromptSubmit` | `[user] <first 80 chars of prompt>` |
-| `Stop` | `[stopped]` or `[done] <last message>` |
-| `Notification` | `[notify] <first 80 chars of message>` |
-| `PreToolUse` | `[tool] <tool name>` |
-| `PostToolUse` | `[done] <tool name>` |
-| `SessionStart` | `[working]` |
-| `StopFailure` | `[error] <error type>` |
+| Claude / Codex Event | Status sent |
+|----------------------|-------------|
+| `UserPromptSubmit` / `SessionStart` | `work` |
+| `PreToolUse` | `tool` |
+| `PostToolUse` / `SubagentStop` (Codex) | `post` |
+| `Notification` (`permission_prompt`) / `PermissionRequest` (Codex) | `perm` |
+| `Notification` (`idle_prompt`) | `note` |
+| `Stop` | `done` |
+| `StopFailure` | `err` |
+
+> The Claude hooks config filters `Notification` with the matcher
+> `permission_prompt|idle_prompt`, so other notification types never invoke
+> the command. Stale sessions are removed by the device after an inactivity
+> timeout.
+
+### Manual Status (debugging)
+
+Send one session event by hand — useful for testing the multi-session display without hooks:
+
+```bash
+# vibekeys session <sid> <status>
+vibekeys session abcd1234 tool
+```
+
+The project name is taken from the current working directory. Valid statuses:
+`work`, `tool`, `post`, `perm`, `note`, `done`, `err`, `end`.
+
+(Use `vibekeys notify "text"` or `vibekeys send "text"` to display a plain text
+message instead.)
 
 ### Claude Code Configuration
 
@@ -251,6 +274,19 @@ Add to `.claude/settings.json`:
     ],
     "Notification": [
       {
+        "matcher": "permission_prompt|idle_prompt",
+        "hooks": [{ "type": "command", "command": "vibekeys hook" }]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [{ "type": "command", "command": "vibekeys hook" }]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
         "hooks": [{ "type": "command", "command": "vibekeys hook" }]
       }
     ]
