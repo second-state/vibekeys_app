@@ -560,10 +560,6 @@ impl SessionEvent {
     }
 }
 
-fn json_payload(ev: &SessionEvent) -> String {
-    serde_json::to_string(ev).unwrap_or_default()
-}
-
 /// 构造一条手工 session 事件(`session` 子命令),proj 取当前工作目录 basename。
 fn session_event_cli(sid: &str, st: &str) -> anyhow::Result<SessionEvent> {
     const STATUSES: [&str; 8] = ["work", "tool", "post", "perm", "note", "done", "err", "end"];
@@ -896,6 +892,30 @@ async fn post_to_server(port: u16, path: &str, body: &str) -> Result<String, Str
         .map_err(|_| "Failed to read server response".to_string())
 }
 
+/// POST 一个 JSON 结构体。用 reqwest 的 `.json()`,自动序列化并带上
+/// `Content-Type: application/json`(axum 的 Json 提取器要求该头,缺了会 415)。
+async fn post_json_to_server<T: serde::Serialize>(
+    port: u16,
+    path: &str,
+    body: &T,
+) -> Result<String, String> {
+    let url = format!("http://127.0.0.1:{}{}", port, path);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .no_proxy()
+        .build()
+        .map_err(|_| "Failed to connect to server".to_string())?;
+    client
+        .post(&url)
+        .json(body)
+        .send()
+        .await
+        .map_err(|_| "Failed to connect to server".to_string())?
+        .text()
+        .await
+        .map_err(|_| "Failed to read server response".to_string())
+}
+
 /// 把一个(已带参数的)命令经 server 转发;若 server 未运行则启动它并把命令作为 initial cmd。
 async fn run_interactive(port: u16, cmd: Command) {
     if check_server(port).await {
@@ -1213,7 +1233,7 @@ async fn forward_command(port: u16, cmd: &Command) {
             log::debug!("Hook input: {}", input);
             if let Some(ev) = claude_event(&input) {
                 log::info!("Hook event: {:?}", ev);
-                let _ = post_to_server(port, "/send-json", &json_payload(&ev)).await;
+                let _ = post_json_to_server(port, "/send-json", &ev).await;
             }
         }
         Command::Codex => {
@@ -1222,7 +1242,7 @@ async fn forward_command(port: u16, cmd: &Command) {
             log::debug!("Codex hook input: {}", input);
             if let Some(ev) = codex_event(&input) {
                 log::info!("Codex hook event: {:?}", ev);
-                let _ = post_to_server(port, "/send-json", &json_payload(&ev)).await;
+                let _ = post_json_to_server(port, "/send-json", &ev).await;
             }
         }
         Command::Notify { message } => match send_command(port, &message).await {
@@ -1230,7 +1250,7 @@ async fn forward_command(port: u16, cmd: &Command) {
             Err(e) => eprintln!("{}", e),
         },
         Command::Session { sid, status } => match session_event_cli(sid, &status) {
-            Ok(ev) => match post_to_server(port, "/send-json", &json_payload(&ev)).await {
+            Ok(ev) => match post_json_to_server(port, "/send-json", &ev).await {
                 Ok(resp) => print!("{}", resp),
                 Err(e) => eprintln!("{}", e),
             },
