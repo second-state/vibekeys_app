@@ -208,7 +208,7 @@ vibekeys keymap BACKSPACE Backspace
 
 ## Hook 模式
 
-从 stdin 读取 hook JSON 事件,提取会话短码、workspace 名和状态,转发为结构化的多会话事件到键盘。设备端按会话维护多条目,可同时显示多个 agent 会话。线格式见 [session-events.md](session-events.md)。
+从 stdin 读取 hook JSON 事件,提取会话短码、workspace 名和状态,转发为结构化的多会话事件到键盘。设备端按会话维护多条目,可同时显示多个 agent 会话。
 
 ```bash
 # For Claude Code (别名: hook)
@@ -244,8 +244,6 @@ vibekeys session abcd1234 tool
 项目名取自当前工作目录。可用状态:`work`、`tool`、`post`、`perm`、`note`、`done`、`err`、`end`。
 
 (发纯文本请用 `vibekeys notify "文本"` 或 `vibekeys send "文本"`。)
-
-项目名取自当前工作目录。可用状态:`work`、`tool`、`post`、`perm`、`note`、`done`、`err`、`end`。
 
 ### Claude Code 配置示例
 

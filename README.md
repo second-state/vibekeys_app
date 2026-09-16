@@ -212,8 +212,7 @@ vibekeys keymap BACKSPACE Backspace
 
 Reads hook JSON events from stdin, extracts the session id (short code), workspace name, and status,
 and forwards a structured multi-session event to the keyboard. The device keeps one entry per session
-and can display several agent sessions at once. See [docs/session-events.md](docs/session-events.md)
-for the wire format.
+and can display several agent sessions at once.
 
 ```bash
 # For Claude Code (alias: hook)

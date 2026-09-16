@@ -24,7 +24,7 @@ const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
 const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
-/// 统一配置特征值(新固件):读取返回整份快照,写入接收部分对象 patch。详见 docs/ble-config.md。
+/// 统一配置特征值(新固件):读取返回整份快照,写入接收部分对象 patch。
 const CONFIG_ID: Uuid = Uuid::from_u128(0xcef520a9_bcb5_4fc6_87f7_82804eee2b20);
 
 /// wifi_list 最多条数,与固件 MAX_WIFI_CREDS 一致。
@@ -530,7 +530,7 @@ async fn shutdown_handler(State(state): State<Arc<AppState>>) -> String {
 }
 
 /// 多会话状态事件,发到 KEYBOARD_DISPLAY 特性。设备端解析 JSON 后按 `type`
-/// 分流:`session` 走多会话表,其他内容按纯文本上屏。协议见 docs/session-events.md。
+/// 分流:`session` 走多会话表,其他内容按纯文本上屏。
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct SessionEvent {
     #[serde(rename = "type")]

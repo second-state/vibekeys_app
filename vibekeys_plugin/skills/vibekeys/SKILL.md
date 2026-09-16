@@ -85,7 +85,7 @@ vibekeys session abcd1234 tool
 
 Valid statuses: `work`, `tool`, `post`, `perm`, `note`, `done`, `err`, `end`
 (`end` removes the session from the display). The project name is taken from
-the current working directory. See `docs/session-events.md` for the wire format.
+the current working directory.
 
 ### Configure key mapping
 
@@ -206,7 +206,7 @@ vibekeys codex
 
 Events handled: UserPromptSubmit, SessionStart, PreToolUse, PostToolUse, Stop,
 Notification (only `permission_prompt` / `idle_prompt`), PermissionRequest (Codex),
-SubagentStop (Codex), StopFailure. See `docs/session-events.md` for the wire format.
+SubagentStop (Codex), StopFailure.
 
 ## Supported Keys
 
