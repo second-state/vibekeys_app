@@ -542,6 +542,12 @@ struct SessionEvent {
     proj: String,
     /// 状态:work | tool | post | perm | note | done | err | end
     st: String,
+    /// 宿主机 OS 标签:macos | win | linux(极少数平台省略)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    os: Option<String>,
+    /// 发出 hook 的父进程 id(hook 进程的 ppid);拿不到则省略
+    #[serde(skip_serializing_if = "Option::is_none")]
+    win_id: Option<String>,
 }
 
 impl SessionEvent {
@@ -552,11 +558,46 @@ impl SessionEvent {
             sid: session_short_id(sid).to_string(),
             proj: proj.to_string(),
             st: st.to_string(),
+            os: host_os().map(str::to_string),
+            win_id: parent_pid(),
         }
     }
 
     fn to_payload(&self) -> Vec<u8> {
         serde_json::to_vec(self).unwrap_or_default()
+    }
+}
+
+/// 宿主机 OS 标签:macos / win / linux;其他平台不携带该字段。
+fn host_os() -> Option<&'static str> {
+    #[cfg(target_os = "macos")]
+    {
+        Some("macos")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        Some("win")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some("linux")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// hook 进程的父进程 id(作为 win_id)。Unix 走 getppid;其他平台拿不到就省略。
+fn parent_pid() -> Option<String> {
+    #[cfg(unix)]
+    {
+        // getppid() 没有失败路径,总是返回父 pid(孤儿进程为 1)
+        Some(unsafe { libc::getppid() }.to_string())
+    }
+    #[cfg(not(unix))]
+    {
+        None
     }
 }
 
@@ -2069,6 +2110,9 @@ mod tests {
         assert_eq!(ev.sid, "0aca72b2");
         assert_eq!(ev.proj, "vibekeys_app");
         assert_eq!(ev.st, "tool");
+        // os 标签 + win_id(父进程 pid)随事件一起发。
+        assert_eq!(ev.os.as_deref(), host_os());
+        assert_eq!(ev.win_id.as_deref(), parent_pid().as_deref());
         // Wire format: compact JSON with the session marker first, no msg field.
         let payload = String::from_utf8(ev.to_payload()).unwrap();
         assert!(payload.starts_with(r#"{"type":"session""#));

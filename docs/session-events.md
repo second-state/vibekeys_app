@@ -16,7 +16,7 @@
 写入现有 **KEYBOARD_DISPLAY** 特性 `cdaa6472-67a8-4241-93cf-145051608573`,单次 writeValue 的 payload:
 
 ```json
-{"type":"session","ver":1,"sid":"abcd1234","proj":"vibekeys_app","st":"tool"}
+{"type":"session","ver":1,"sid":"abcd1234","proj":"vibekeys_app","st":"tool","os":"macos","win_id":"49446"}
 ```
 
 ## 字段说明
@@ -28,6 +28,8 @@
 | `sid` | string | 是 | session-id 前 8 位短码(UUID 去连字符也行,前缀含义不变);设备端以此为 key upsert 会话条目 |
 | `proj` | string | 是 | workspace 路径最后一段(项目名) |
 | `st` | string | 是 | 状态,见下表 |
+| `os` | string | 否 | 宿主机 OS 标签:`macos` / `win` / `linux`;其他平台省略 |
+| `win_id` | string | 否 | hook 进程的**父进程 id**(ppid,十进制字符串);macOS/Linux 携带,其余平台省略 |
 
 > 事件只有 `type/ver/sid/proj/st` 五个字段,协议不携带自由文本;设备端只依据 `sid`/`proj`/`st` 渲染,无需处理转义与截断。
 
