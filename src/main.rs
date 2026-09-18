@@ -1815,11 +1815,14 @@ fn init_logger() {
                         .basename("vibekeys")
                         .suppress_timestamp(),
                 )
+                // 追加模式:启动时不重命名现有文件,server 与所有 hook/CLI 短命进程
+                // 合并写同一个 vibekeys_rCURRENT.log,滚动只由下面的大小条件触发。
+                .append()
                 .write_mode(flexi_logger::WriteMode::Direct)
                 .rotate(
                     flexi_logger::Criterion::Size(10_000_000), // 10MB
                     flexi_logger::Naming::Numbers,
-                    flexi_logger::Cleanup::KeepForDays(5),
+                    flexi_logger::Cleanup::KeepLogFiles(5),
                 )
                 .duplicate_to_stdout(flexi_logger::Duplicate::All)
                 .format_for_stderr(flexi_logger::default_format)
