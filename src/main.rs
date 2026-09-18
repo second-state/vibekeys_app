@@ -8,7 +8,7 @@ use axum::{
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use std::io::{self, Read};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 const DEFAULT_PORT: u16 = 42837;
@@ -486,7 +486,7 @@ async fn check_connected(peripheral: &PlatformPeripheral) -> bool {
     }
 }
 
-async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
+async fn ble_task(mut rx: mpsc::Receiver<BleCmd>, last_activity: Arc<Mutex<std::time::Instant>>) {
     // Initial connection with timeout
     log::info!("Scanning for BLE device...");
     let peripheral = match try_ble_connect().await {
@@ -553,6 +553,8 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
             }
             Some(SelectResult::Notification(notification)) => {
                 if notification.uuid == KEYMAP_ASR_RESULT_ID && !notification.value.is_empty() {
+                    // ASR 也是真实使用,刷新空闲计时。
+                    *last_activity.lock().unwrap() = std::time::Instant::now();
                     let text = String::from_utf8_lossy(&notification.value).to_string();
                     log::info!("ASR result received: {}", text);
                     match clipboard.as_mut() {
@@ -632,6 +634,17 @@ async fn ble_read(ble_tx: &mpsc::Sender<BleCmd>, char_uuid: Uuid) -> anyhow::Res
 struct AppState {
     ble_tx: mpsc::Sender<BleCmd>,
     shutdown_tx: Arc<tokio::sync::Notify>,
+    /// 最近一次真实使用(HTTP 业务请求/ASR 通知),空闲看门狗据此退出
+    last_activity: Arc<Mutex<std::time::Instant>>,
+}
+
+/// 空闲退出阈值:server 持续无业务请求/ASR 活动达到该时长即自动退出,
+/// 下一条 hook 会自动重新拉起。`/health` 等探活请求不刷新计时。
+const IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// 记录一次真实使用,刷新空闲计时。
+fn touch_activity(state: &AppState) {
+    *state.last_activity.lock().unwrap() = std::time::Instant::now();
 }
 
 async fn health_handler() -> &'static str {
@@ -779,6 +792,7 @@ fn session_short_id(sid: &str) -> &str {
 }
 
 async fn send_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     match result {
@@ -797,6 +811,7 @@ async fn send_json_handler(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SessionEvent>,
 ) -> String {
+    touch_activity(&state);
     let data = body.to_payload();
     let result = ble_send(&state.ble_tx, KEYBOARD_DISPLAY_ID, &data).await;
     // If BLE disconnected, shut down the server
@@ -811,6 +826,7 @@ async fn send_json_handler(
 }
 
 async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let result = ble_send(&state.ble_tx, KEYMAP_CONFIG_ID, body.as_bytes()).await;
     // If BLE disconnected, shut down the server
     match result {
@@ -824,6 +840,7 @@ async fn keymap_handler(State(state): State<Arc<AppState>>, body: String) -> Str
 }
 
 async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     // body 是 ASR 内层对象 {platform,uri,api_key,model};包成 CONFIG patch {"asr_config": <body>}。
     let value: serde_json::Value = match serde_json::from_str(&body) {
         Ok(v) => v,
@@ -843,6 +860,7 @@ async fn asr_config_handler(State(state): State<Arc<AppState>>, body: String) ->
 }
 
 async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let req = match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => v,
         Err(e) => return format!("error: invalid JSON: {}\n", e),
@@ -882,6 +900,7 @@ async fn wifi_config_handler(State(state): State<Arc<AppState>>, body: String) -
 
 /// 读 CONFIG 特性,返回整份快照 JSON。
 async fn config_show_handler(State(state): State<Arc<AppState>>) -> String {
+    touch_activity(&state);
     match ble_read(&state.ble_tx, CONFIG_ID).await {
         Ok(data) => String::from_utf8_lossy(&data).to_string(),
         Err(e) => {
@@ -911,6 +930,7 @@ async fn write_config_field(
 }
 
 async fn mic_model_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let mode = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| v["mode"].as_str().map(|s| s.to_string()))
@@ -924,6 +944,7 @@ async fn mic_model_handler(State(state): State<Arc<AppState>>, body: String) -> 
 }
 
 async fn prefer_builtin_asr_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let value = match serde_json::from_str::<serde_json::Value>(&body) {
         Ok(v) => match v["value"].as_bool() {
             Some(b) => b,
@@ -935,6 +956,7 @@ async fn prefer_builtin_asr_handler(State(state): State<Arc<AppState>>, body: St
 }
 
 async fn server_url_handler(State(state): State<Arc<AppState>>, body: String) -> String {
+    touch_activity(&state);
     let url = serde_json::from_str::<serde_json::Value>(&body)
         .ok()
         .and_then(|v| v["url"].as_str().map(|s| s.to_string()))
@@ -958,14 +980,33 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
     let state = Arc::new(AppState {
         ble_tx,
         shutdown_tx: notify.clone(),
+        last_activity: Arc::new(Mutex::new(std::time::Instant::now())),
     });
 
     let notify_ = notify.clone();
+    let last_activity = state.last_activity.clone();
     tokio::spawn(async move {
-        ble_task(ble_rx).await;
-        log::warn!("BLE task ended, shutting down server");
+        ble_task(ble_rx, last_activity).await;
         notify_.notify_waiters();
+        log::warn!("BLE task ended, shutting down server");
     });
+
+    // 空闲看门狗:hook 拉起的 server 不该永久驻留,无使用达到阈值即自动退出。
+    {
+        let notify = notify.clone();
+        let last_activity = state.last_activity.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let idle = last_activity.lock().unwrap().elapsed();
+                if idle >= IDLE_TIMEOUT {
+                    notify.notify_waiters();
+                    log::info!("Idle for {:?}, shutting down", idle);
+                    return;
+                }
+            }
+        });
+    }
 
     let app = Router::new()
         .route("/", get(root_handler))
