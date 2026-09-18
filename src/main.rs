@@ -308,16 +308,14 @@ async fn write_asr_acknowledge(
     }
 }
 
-/// Set text to clipboard
-fn set_to_clipboard(text: &str) {
-    if let Ok(mut clipboard) = Clipboard::new() {
-        if let Err(e) = clipboard.set_text(text) {
-            log::error!("Failed to set clipboard: {}", e);
-        } else {
-            log::info!("Text set to clipboard: {}", text);
-        }
+/// Set text to clipboard.复用调用方持有的长生命周期 `Clipboard`:Linux(X11)下
+/// 剪贴板内容由 owner 实时提供,每次 new 后立刻 drop 会让所有权随连接一起消失,
+/// 稍后的 Ctrl+V 会粘出旧内容(见 arboard 的 "dropped very quickly" 警告)。
+fn set_to_clipboard(clipboard: &mut Clipboard, text: &str) {
+    if let Err(e) = clipboard.set_text(text) {
+        log::error!("Failed to set clipboard: {}", e);
     } else {
-        log::error!("Failed to access clipboard");
+        log::info!("Text set to clipboard: {}", text);
     }
 }
 
@@ -415,6 +413,16 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
         }
     };
 
+    // 剪贴板与 BLE 任务同生命周期:创建一次、循环期间不 drop,X11 所有权
+    // 一直由本进程持有,键盘随后发来的 Ctrl+V 才能取到刚写入的文本。
+    let mut clipboard = match Clipboard::new() {
+        Ok(clipboard) => Some(clipboard),
+        Err(e) => {
+            log::error!("Failed to access clipboard: {}", e);
+            None
+        }
+    };
+
     loop {
         match select_rx_and_notify(&mut rx, &peripheral).await {
             Some(SelectResult::BleCmd(BleCmd::Send {
@@ -449,7 +457,10 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
             }
             Some(SelectResult::AsrResult(asr_char, text)) => {
                 log::info!("ASR result received: {}", text);
-                set_to_clipboard(&text);
+                match clipboard.as_mut() {
+                    Some(clipboard) => set_to_clipboard(clipboard, &text),
+                    None => log::error!("clipboard unavailable, skip copy"),
+                }
                 write_asr_acknowledge(&peripheral, &asr_char).await;
             }
             None => return,
