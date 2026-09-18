@@ -56,6 +56,17 @@
                     }
                 ]
             }
+        ],
+        "SessionEnd": [
+            {
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": "vibekeys codex",
+                        "timeoutSec": 3
+                    }
+                ]
+            }
         ]
     }
 }

@@ -1751,6 +1751,7 @@ fn codex_event(input: &str) -> Option<SessionEvent> {
         "PermissionRequest" => ev("perm"),
         "SessionStart" => ev("work"),
         "SubagentStop" => ev("post"),
+        "SessionEnd" => ev("end"),
         _ => return None,
     })
 }
@@ -2367,6 +2368,17 @@ mod tests {
         }"#;
         let ev = claude_event(input).expect("event");
         assert_eq!(ev.st, "done");
+    }
+
+    #[test]
+    fn codex_session_end_maps_to_end() {
+        let input = r#"{
+            "hook_event_name": "SessionEnd",
+            "session_id": "019f84955ef57b22a3c8ffd4bf90b7d4",
+            "cwd": "/tmp/demo/"
+        }"#;
+        let ev = codex_event(input).expect("event");
+        assert_eq!(ev.st, "end");
     }
 
     #[test]
