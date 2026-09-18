@@ -233,6 +233,13 @@ vibekeys codex
 | `Notification` (`idle_prompt`) | `note` |
 | `Stop` | `done` |
 | `StopFailure` | `err` |
+| `SessionEnd` | `end` |
+
+> `SessionEnd` runs synchronously (Claude waits for it at exit; 1.5 s budget
+> by default, raised to 3 s via the hook's `timeout`), so the command is
+> forwarding-only: when no server is running it exits immediately instead of
+> starting one. The device also removes stale sessions by its own inactivity
+> timeout, so a dropped `end` event is harmless.
 
 > The Claude hooks config filters `Notification` with the matcher
 > `permission_prompt|idle_prompt`, so other notification types never invoke

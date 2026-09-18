@@ -229,6 +229,9 @@ vibekeys codex
 | `Notification`(`idle_prompt`) | `note` |
 | `Stop` | `done` |
 | `StopFailure` | `err` |
+| `SessionEnd` | `end` |
+
+> `SessionEnd` 是同步 hook(claude 退出时会等它,默认预算 1.5s,hook 里 `timeout` 提到 3s),因此对应命令只做转发:server 没在跑就直接退出,不会为它拉起 server。就算事件丢了也无妨,设备端会按自己的不活跃超时移除会话。
 
 > Claude hooks 配置用 matcher `permission_prompt|idle_prompt` 过滤了 `Notification`,其他通知类型不会触发命令。长时间不活跃的会话由设备端超时自动移除。
 

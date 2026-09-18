@@ -1293,34 +1293,9 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
                 reply: tx,
             })
         }
-        Command::Claude | Command::Hook => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input).ok();
-            log::debug!("Hook input: {}", input);
-            claude_event(&input).map(|ev| {
-                log::info!("Hook event: {:?}", ev);
-                let (tx, _) = oneshot::channel();
-                BleCmd::Send {
-                    char_uuid: KEYBOARD_DISPLAY_ID,
-                    data: ev.to_payload(),
-                    reply: tx,
-                }
-            })
-        }
-        Command::Codex => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input).ok();
-            log::debug!("Codex hook input: {}", input);
-            codex_event(&input).map(|ev| {
-                log::info!("Codex hook event: {:?}", ev);
-                let (tx, _) = oneshot::channel();
-                BleCmd::Send {
-                    char_uuid: KEYBOARD_DISPLAY_ID,
-                    data: ev.to_payload(),
-                    reply: tx,
-                }
-            })
-        }
+        // Claude/Hook/Codex 在 main() 里统一处理(stdin 只能读一次,且 SessionEnd
+        // 有"无 server 不拉起"的特殊分支),不会走到这里。
+        Command::Claude | Command::Hook | Command::Codex => None,
         Command::Notify { message } => {
             let (tx, _) = oneshot::channel();
             Some(BleCmd::Send {
@@ -1452,24 +1427,8 @@ async fn forward_command(port: u16, cmd: &Command) {
                 }
             }
         }
-        Command::Claude | Command::Hook => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input).ok();
-            log::debug!("Hook input: {}", input);
-            if let Some(ev) = claude_event(&input) {
-                log::info!("Hook event: {:?}", ev);
-                let _ = post_json_to_server(port, "/send-json", &ev).await;
-            }
-        }
-        Command::Codex => {
-            let mut input = String::new();
-            io::stdin().read_to_string(&mut input).ok();
-            log::debug!("Codex hook input: {}", input);
-            if let Some(ev) = codex_event(&input) {
-                log::info!("Codex hook event: {:?}", ev);
-                let _ = post_json_to_server(port, "/send-json", &ev).await;
-            }
-        }
+        // Claude/Hook/Codex 在 main() 里统一处理,不会走到这里。
+        Command::Claude | Command::Hook | Command::Codex => {}
         Command::Notify { message } => match send_command(port, &message).await {
             Ok(resp) => print!("{}", resp),
             Err(e) => eprintln!("{}", e),
@@ -1760,11 +1719,24 @@ fn claude_event(input: &str) -> Option<SessionEvent> {
         "PostToolUse" => ev("post"),
         "StopFailure" => ev("err"),
         "SessionStart" => ev("work"),
+        // /clear、/resume、登出、正常退出都会触发;崩溃/被杀不触发,只是兜底提速
+        "SessionEnd" => ev("end"),
         _ => return None,
     })
 }
 
 /// 把 Codex 的 hook JSON 转成 SessionEvent。语义与 `claude_event` 一致。
+/// hook 命令共用:读一次 stdin(stdin 只能读一次),按命令类型解析成事件。
+fn read_hook_event(cmd: &Command) -> Option<SessionEvent> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).ok();
+    log::debug!("Hook input: {}", input);
+    match cmd {
+        Command::Codex => codex_event(&input),
+        _ => claude_event(&input),
+    }
+}
+
 fn codex_event(input: &str) -> Option<SessionEvent> {
     let hook: serde_json::Value = serde_json::from_str(input).ok()?;
     let event = hook["hook_event_name"].as_str().unwrap_or("");
@@ -2161,6 +2133,33 @@ async fn main() {
         return;
     }
 
+    // Hook 命令在此统一处理(stdin 只能读一次,必须先解析事件再选冷/热路径):
+    // server 在就转发;不在时 SessionEnd 静默退出——它是同步 hook,claude 退出时
+    // 会等它,而 BLE 扫描拉起 server 会吃掉它仅有的 1.5s 预算(事件由设备端
+    // 超时兜底);其余事件照旧冷启动 server。
+    if matches!(
+        cli.command,
+        Command::Claude | Command::Hook | Command::Codex
+    ) {
+        let ev = read_hook_event(&cli.command);
+        let is_end = ev.as_ref().map_or(false, |e| e.st == "end");
+        if check_server(port).await {
+            if let Some(ev) = ev {
+                log::info!("Hook event: {:?}", ev);
+                let _ = post_json_to_server(port, "/send-json", &ev).await;
+            }
+        } else if !is_end {
+            let initial_cmds = ev
+                .map(|ev| Command::Send {
+                    message: String::from_utf8(ev.to_payload()).unwrap_or_default(),
+                })
+                .into_iter()
+                .collect();
+            run_server(port, initial_cmds).await;
+        }
+        return;
+    }
+
     // Other commands: check if server is already running, if not start it
     if check_server(port).await {
         forward_command(port, &cli.command).await;
@@ -2387,6 +2386,18 @@ mod tests {
         assert!(claude_event("not json").is_none());
         assert!(codex_event("").is_none());
         assert!(claude_event(r#"{"hook_event_name":"PreCompact"}"#).is_none());
+    }
+
+    #[test]
+    fn claude_session_end_maps_to_end() {
+        let input = r#"{
+            "hook_event_name": "SessionEnd",
+            "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "cwd": "/tmp/demo",
+            "reason": "prompt_input_exit"
+        }"#;
+        let ev = claude_event(input).expect("event");
+        assert_eq!(ev.st, "end");
     }
 
     #[test]
