@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# jump — 聚焦到指定进程所在窗口, 或跳转到 herdr 的指定 pane
+# 用法:
+#   jump --pid <pid>           沿进程链向上找, 聚焦它所在的 Hyprland 窗口
+#   jump --herdr <ws:pane>     聚焦 herdr client 窗口, 并在 herdr 内部跳到该 pane
+# 示例:
+#   jump --pid 1330226
+#   jump --herdr w2:p3
+
+set -euo pipefail
+
+usage() {
+  echo "Usage: $0 --pid <pid> | --herdr <ws:pane> | --herdr-agent <ws:pane>"
+  exit 1
+}
+
+# 所有 Hyprland 窗口的 pid 列表
+window_pids() {
+  hyprctl clients -j | jq -r '.[].pid' | sort -u
+}
+
+# 从 pid 向上爬进程链, 返回第一个"是 Hyprland 窗口"的祖先 pid; 找不到返回 1
+find_window_ancestor() {
+  local pid=$1
+  local wins
+  wins=$(window_pids)
+  while [ -n "$pid" ] && [ "$pid" -gt 1 ]; do
+    if grep -qx "$pid" <<< "$wins"; then
+      echo "$pid"
+      return 0
+    fi
+    read -r pid _ <<< "$(ps -o ppid=,comm= -p "$pid" 2>/dev/null)"
+  done
+  return 1
+}
+
+focus_window() {
+  local wpid=$1
+  local class
+  class=$(hyprctl clients -j | jq -r --argjson p "$wpid" '.[] | select(.pid == $p) | .class' | head -1)
+  hyprctl dispatch "hl.dsp.focus({ window = \"pid:$wpid\" })" >/dev/null
+  echo "✓ Focused window pid:$wpid [$class]"
+}
+
+[ $# -ge 2 ] || usage
+MODE=$1
+
+case "$MODE" in
+  --pid)
+    pid=$2
+    [[ "$pid" =~ ^[0-9]+$ ]] || { echo "✗ PID must be a number: $pid" >&2; exit 1; }
+    if ! wpid=$(find_window_ancestor "$pid"); then
+      echo "✗ Process $pid is not inside any Hyprland window" >&2
+      exit 1
+    fi
+    focus_window "$wpid"
+    ;;
+
+  --herdr)
+    pane=$2
+    [[ "$pane" =~ ^w[0-9]+:p[0-9A-Za-z]+$ ]] || { echo "✗ Pane format should be w<N>:p<id>, e.g. w2:p3" >&2; exit 1; }
+    ws=${pane%%:*}
+
+    # 1. 找一个"活在 Hyprland 窗口下"的 herdr 进程 (client; server 若挂在其下也能爬到同一窗口)
+    herdr_window=""
+    for h in $(pgrep -x herdr || true); do
+      if wpid=$(find_window_ancestor "$h"); then
+        herdr_window=$wpid
+        break
+      fi
+    done
+    if [ -z "$herdr_window" ]; then
+      echo "✗ No open herdr client found" >&2
+      exit 1
+    fi
+
+    # 2. 校验 pane 存在 (提前报错, 避免窗口切过去了 herdr 里却没跳成)
+    tab_id=$(herdr pane list | jq -r --arg p "$pane" '.result.panes[] | select(.pane_id == $p) | .tab_id')
+    if [ -z "$tab_id" ]; then
+      echo "✗ Pane not found in herdr: $pane" >&2
+      exit 1
+    fi
+
+    # 3. 先聚焦 herdr 所在窗口, 再做 herdr 内部跳转 (workspace → tab)
+    focus_window "$herdr_window"
+    herdr workspace focus "$ws" >/dev/null
+    herdr tab focus "$tab_id" >/dev/null
+    echo "✓ herdr jumped to $pane (workspace:$ws tab:$tab_id)"
+    ;;
+
+  --herdr-agent)
+    pane=$2
+    [[ "$pane" =~ ^w[0-9]+:p[0-9A-Za-z]+$ ]] || { echo "✗ Pane format should be w<N>:p<id>, e.g. w2:p3" >&2; exit 1; }
+
+    # 1. 找一个"活在 Hyprland 窗口下"的 herdr 进程 (同 --herdr 模式)
+    herdr_window=""
+    for h in $(pgrep -x herdr || true); do
+      if wpid=$(find_window_ancestor "$h"); then
+        herdr_window=$wpid
+        break
+      fi
+    done
+    if [ -z "$herdr_window" ]; then
+      echo "✗ No open herdr client found" >&2
+      exit 1
+    fi
+
+    # 2. 校验该 pane 上确实跑着 agent
+    if ! herdr agent list | jq -e --arg p "$pane" '.result.agents[] | select(.pane_id == $p)' >/dev/null; then
+      echo "✗ No agent running on pane: $pane" >&2
+      exit 1
+    fi
+
+    # 3. 聚焦 herdr 所在窗口, 再用 agent focus 一步跳到该 agent 的 pane
+    focus_window "$herdr_window"
+    herdr agent focus "$pane" >/dev/null
+    echo "✓ herdr agent focused: $pane"
+    ;;
+
+  *)
+    usage
+    ;;
+esac

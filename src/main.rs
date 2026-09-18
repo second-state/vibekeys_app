@@ -24,6 +24,9 @@ const CONTROLLER_SERVICE_ID: Uuid = Uuid::from_u128(0x623fa3e2_631b_4f8f_a6e7_a7
 const KEYBOARD_DISPLAY_ID: Uuid = Uuid::from_u128(0xcdaa6472_67a8_4241_93cf_145051608573);
 const KEYMAP_CONFIG_ID: Uuid = Uuid::from_u128(0x6f2a291c_0e4d_4f0f_9446_50bcd0b73bb0);
 const KEYMAP_ASR_RESULT_ID: Uuid = Uuid::from_u128(0xf67f3c25_c9f0_456e_955e_cd9d9dd91051);
+/// 预留的设备→主机通知特性(固件 KEYBOARD_NOTIFY_ID)。目前承载
+/// `{"focus":"pid <ppid>"}` / `{"focus":"herdr <ws:pane>"}` 聚焦事件。
+const KEYBOARD_NOTIFY_ID: Uuid = Uuid::from_u128(0xd4f7e1b3_3c4d_4f4e_8e2a_8f4e5c6d7e8f);
 /// 统一配置特征值(新固件):读取返回整份快照,写入接收部分对象 patch。
 const CONFIG_ID: Uuid = Uuid::from_u128(0xcef520a9_bcb5_4fc6_87f7_82804eee2b20);
 
@@ -185,12 +188,11 @@ async fn find_peripheral(
 async fn connect_and_discover(p: &PlatformPeripheral) -> anyhow::Result<()> {
     p.connect().await?;
     p.discover_services().await?;
-    // Subscribe to ASR result characteristic notifications
+    // 订阅设备→主机的通知:ASR 转写结果 + 预留的 KEYBOARD_NOTIFY(focus 跳转)
     for c in p.characteristics() {
-        if c.uuid == KEYMAP_ASR_RESULT_ID {
+        if c.uuid == KEYMAP_ASR_RESULT_ID || c.uuid == KEYBOARD_NOTIFY_ID {
             p.subscribe(&c).await?;
-            log::info!("Subscribed to ASR result notifications");
-            break;
+            log::info!("Subscribed to notifications: {}", c.uuid);
         }
     }
     Ok(())
@@ -319,42 +321,119 @@ fn set_to_clipboard(clipboard: &mut Clipboard, text: &str) {
     }
 }
 
-/// Handle ASR result notifications: set to clipboard and acknowledge with 1u8
-async fn handle_asr_notifications(
-    peripheral: &PlatformPeripheral,
-) -> Option<(btleplug::api::Characteristic, String)> {
-    log::info!("ASR notification handler started");
-
-    // Find the ASR result characteristic
-    let asr_char = peripheral
-        .characteristics()
-        .iter()
-        .find(|c| c.uuid == KEYMAP_ASR_RESULT_ID)
-        .cloned()?;
-
-    let mut notify_stream = peripheral.notifications().await.ok()?;
-
-    // Listen for notifications, filtering by ASR characteristic UUID
-    while let Some(notification) = notify_stream.next().await {
-        // Only process notifications from ASR result characteristic
-        if notification.uuid != KEYMAP_ASR_RESULT_ID {
-            continue;
+/// 处理 KEYBOARD_NOTIFY(d4f7e1b3)推送的 `{"focus":"pid N"|"herdr w2:p3"}`:
+/// 本机在 Omarchy 桌面时后台调 jump 脚本聚焦对应窗口/pane,其余情况静默忽略。
+async fn handle_focus_notify(data: &[u8]) {
+    let Some((flag, value)) = parse_focus(data) else {
+        return;
+    };
+    if !is_omarchy() {
+        return;
+    }
+    let Some(script) = find_jump_script() else {
+        log::warn!(
+            "focus event {} {} ignored: jump script not found",
+            flag,
+            value
+        );
+        return;
+    };
+    log::info!("jump {} {}", flag, value);
+    match tokio::process::Command::new(&script)
+        .arg(flag)
+        .arg(&value)
+        .spawn()
+    {
+        Ok(mut child) => {
+            tokio::spawn(async move {
+                match child.wait().await {
+                    Ok(status) if status.success() => {}
+                    Ok(status) => log::warn!("jump exited with {}", status),
+                    Err(e) => log::error!("jump failed: {}", e),
+                }
+            });
         }
+        Err(e) => log::error!("failed to spawn {}: {}", script.display(), e),
+    }
+}
 
-        let data = notification.value;
-        if !data.is_empty() {
-            // Extract string from notification data
-            let text = String::from_utf8_lossy(&data).to_string();
-            return Some((asr_char, text));
+/// 把 KEYBOARD_NOTIFY 的 payload 解析成 jump 脚本参数。
+/// 合法格式:`{"focus":"pid <数字>"}` → ("--pid", pid)、
+/// `{"focus":"herdr <ws:pane>"}` → ("--herdr", pane);其余返回 None。
+fn parse_focus(data: &[u8]) -> Option<(&'static str, String)> {
+    let value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(data)).ok()?;
+    let focus = value.get("focus")?.as_str()?;
+    match focus.split_once(' ')? {
+        ("pid", id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => {
+            Some(("--pid", id.to_string()))
+        }
+        ("herdr", pane) if !pane.is_empty() => Some(("--herdr", pane.to_string())),
+        _ => None,
+    }
+}
+
+/// 定位 jump 脚本:显式 env > 插件根(hook 链路启动时注入 CLAUDE_PLUGIN_ROOT)>
+/// ~/.vibekeys/scripts > 插件市场安装目录。找不到返回 None。
+fn find_jump_script() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("VIBEKEYS_JUMP_SCRIPT") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
         }
     }
-
+    if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
+        let p = std::path::PathBuf::from(root).join("scripts").join("jump");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let home = dirs::home_dir()?;
+    for dir in [
+        home.join(".vibekeys").join("scripts"),
+        home.join(".claude").join("plugins"),
+    ] {
+        if dir.is_dir() {
+            if let Some(found) = find_jump_in_plugins(&dir, 6) {
+                return Some(found);
+            }
+        }
+    }
     None
 }
 
+/// 在 `dir` 下(限深)找 `vibekeys*/scripts/jump`。
+fn find_jump_in_plugins(dir: &std::path::Path, depth: u8) -> Option<std::path::PathBuf> {
+    if depth == 0 {
+        return None;
+    }
+    let looks_like_vibekeys = dir.file_name().map_or(false, |n| {
+        n.to_string_lossy().to_lowercase().contains("vibekeys")
+    });
+    if looks_like_vibekeys {
+        let candidate = dir.join("scripts").join("jump");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .collect();
+    entries.sort();
+    entries
+        .iter()
+        .filter(|p| p.is_dir())
+        .find_map(|p| find_jump_in_plugins(p, depth - 1))
+}
+
+/// 设备通知流(btleplug 返回的是 boxed trait object)。
+type NotificationStream =
+    std::pin::Pin<Box<dyn futures::Stream<Item = btleplug::api::ValueNotification> + Send>>;
+
 enum SelectResult {
     BleCmd(BleCmd),
-    AsrResult(btleplug::api::Characteristic, String),
+    /// 设备推送的任意一条通知,由 UUID 分流处理
+    Notification(btleplug::api::ValueNotification),
 }
 
 async fn loop_check_connection(peripheral: &PlatformPeripheral) {
@@ -371,13 +450,21 @@ async fn loop_check_connection(peripheral: &PlatformPeripheral) {
 async fn select_rx_and_notify(
     rx: &mut mpsc::Receiver<BleCmd>,
     peripheral: &PlatformPeripheral,
+    notifications: &mut Option<NotificationStream>,
 ) -> Option<SelectResult> {
+    // 通知流创建失败时用 pending 兜底:只丢通知,不影响 Send/Read 命令通道。
+    let next_notification = async {
+        match notifications.as_mut() {
+            Some(stream) => stream.next().await,
+            None => std::future::pending().await,
+        }
+    };
     tokio::select! {
         cmd = rx.recv() => {
             cmd.map(|c| SelectResult::BleCmd(c))
         }
-        asr_result = handle_asr_notifications(peripheral) => {
-            asr_result.map(|res| SelectResult::AsrResult(res.0, res.1))
+        notification = next_notification => {
+            notification.map(SelectResult::Notification)
         }
         _ = loop_check_connection(peripheral) => {
             None
@@ -413,6 +500,15 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
         }
     };
 
+    // 一条长驻通知流,覆盖所有已订阅特征值(ASR 结果 + KEYBOARD_NOTIFY)。
+    let mut notifications = match peripheral.notifications().await {
+        Ok(stream) => Some(stream),
+        Err(e) => {
+            log::error!("Failed to open notification stream: {}", e);
+            None
+        }
+    };
+
     // 剪贴板与 BLE 任务同生命周期:创建一次、循环期间不 drop,X11 所有权
     // 一直由本进程持有,键盘随后发来的 Ctrl+V 才能取到刚写入的文本。
     let mut clipboard = match Clipboard::new() {
@@ -424,7 +520,7 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
     };
 
     loop {
-        match select_rx_and_notify(&mut rx, &peripheral).await {
+        match select_rx_and_notify(&mut rx, &peripheral, &mut notifications).await {
             Some(SelectResult::BleCmd(BleCmd::Send {
                 char_uuid,
                 data,
@@ -455,13 +551,25 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>) {
                 let result = read_ble(&peripheral, char_uuid).await;
                 let _ = reply.send(result.map_err(|e| e.to_string()));
             }
-            Some(SelectResult::AsrResult(asr_char, text)) => {
-                log::info!("ASR result received: {}", text);
-                match clipboard.as_mut() {
-                    Some(clipboard) => set_to_clipboard(clipboard, &text),
-                    None => log::error!("clipboard unavailable, skip copy"),
+            Some(SelectResult::Notification(notification)) => {
+                if notification.uuid == KEYMAP_ASR_RESULT_ID && !notification.value.is_empty() {
+                    let text = String::from_utf8_lossy(&notification.value).to_string();
+                    log::info!("ASR result received: {}", text);
+                    match clipboard.as_mut() {
+                        Some(clipboard) => set_to_clipboard(clipboard, &text),
+                        None => log::error!("clipboard unavailable, skip copy"),
+                    }
+                    if let Some(asr_char) = peripheral
+                        .characteristics()
+                        .iter()
+                        .find(|c| c.uuid == KEYMAP_ASR_RESULT_ID)
+                        .cloned()
+                    {
+                        write_asr_acknowledge(&peripheral, &asr_char).await;
+                    }
+                } else if notification.uuid == KEYBOARD_NOTIFY_ID {
+                    handle_focus_notify(&notification.value).await;
                 }
-                write_asr_acknowledge(&peripheral, &asr_char).await;
             }
             None => return,
         }
@@ -553,10 +661,10 @@ struct SessionEvent {
     proj: String,
     /// 状态:work | tool | post | perm | note | done | err | end
     st: String,
-    /// 宿主机 OS 标签:macos | win | linux(极少数平台省略)
+    /// 宿主机 OS 标签:macos | win | linux | omarchy(极少数平台省略)
     #[serde(skip_serializing_if = "Option::is_none")]
     os: Option<String>,
-    /// 发出 hook 的父进程 id(hook 进程的 ppid);拿不到则省略
+    /// 窗口/pane 标识,带来源前缀:`herdr <pane-id>` 或 `pid <ppid>`;拿不到则省略
     #[serde(skip_serializing_if = "Option::is_none")]
     win_id: Option<String>,
 }
@@ -570,7 +678,7 @@ impl SessionEvent {
             proj: proj.to_string(),
             st: st.to_string(),
             os: host_os().map(str::to_string),
-            win_id: parent_pid(),
+            win_id: win_id(),
         }
     }
 
@@ -579,7 +687,13 @@ impl SessionEvent {
     }
 }
 
-/// 宿主机 OS 标签:macos / win / linux;其他平台不携带该字段。
+/// 当前是否运行在 Omarchy 桌面里(以 DESKTOP_SESSION=omarchy 为准)。
+fn is_omarchy() -> bool {
+    std::env::var("DESKTOP_SESSION").map_or(false, |s| s == "omarchy")
+}
+
+/// 宿主机 OS 标签:macos / win / linux;检出 Omarchy 桌面时发 omarchy,
+/// 其他平台不携带该字段。
 fn host_os() -> Option<&'static str> {
     #[cfg(target_os = "macos")]
     {
@@ -591,7 +705,11 @@ fn host_os() -> Option<&'static str> {
     }
     #[cfg(target_os = "linux")]
     {
-        Some("linux")
+        if is_omarchy() {
+            Some("omarchy")
+        } else {
+            Some("linux")
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
@@ -599,7 +717,21 @@ fn host_os() -> Option<&'static str> {
     }
 }
 
-/// hook 进程的父进程 id(作为 win_id)。Unix 走 getppid;其他平台拿不到就省略。
+/// win_id:herdr(终端复用器)的 pane id 优先——同一 pane 内的所有 hook 稳定相同;
+/// 不在 herdr 里则回落到 hook 进程的父 pid。值带来源前缀:`herdr <id>` / `pid <ppid>`。
+fn win_id() -> Option<String> {
+    win_id_from_env(std::env::var("HERDR_PANE_ID").ok(), parent_pid())
+}
+
+/// `win_id` 的纯逻辑部分(便于测试):pane id 非空则用,否则用父 pid。
+fn win_id_from_env(pane: Option<String>, ppid: Option<String>) -> Option<String> {
+    match pane {
+        Some(pane) if !pane.is_empty() => Some(format!("herdr {}", pane)),
+        _ => ppid.map(|pid| format!("pid {}", pid)),
+    }
+}
+
+/// hook 进程的父进程 id(herdr 缺席时的 win_id 兜底)。Unix 走 getppid;其他平台省略。
 fn parent_pid() -> Option<String> {
     #[cfg(unix)]
     {
@@ -2111,6 +2243,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_focus_accepts_win_id_wire_values() {
+        // 与 win_id 同款前缀格式:pid / herdr。
+        assert_eq!(
+            parse_focus(br#"{"focus":"pid 1234"}"#),
+            Some(("--pid", "1234".to_string()))
+        );
+        assert_eq!(
+            parse_focus(br#"{"focus":"herdr w2:p3"}"#),
+            Some(("--herdr", "w2:p3".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_focus_rejects_invalid_payloads() {
+        // 非 JSON / 缺 focus / focus 非字符串。
+        assert_eq!(parse_focus(b"hello"), None);
+        assert_eq!(parse_focus(br#"{"other":"pid 1"}"#), None);
+        assert_eq!(parse_focus(br#"{"focus":42}"#), None);
+        // 未知前缀、空值、非数字 pid 都不算合法聚焦目标。
+        assert_eq!(parse_focus(br#"{"focus":"wayland 9"}"#), None);
+        assert_eq!(parse_focus(br#"{"focus":"pid"}"#), None);
+        assert_eq!(parse_focus(br#"{"focus":"pid "}"#), None);
+        assert_eq!(parse_focus(br#"{"focus":"pid 12ab"}"#), None);
+        assert_eq!(parse_focus(br#"{"focus":"herdr "}"#), None);
+    }
+
+    #[test]
+    fn win_id_prefers_herdr_pane_over_pid() {
+        // herdr pane id 存在时带 `herdr ` 前缀,优先于父 pid。
+        assert_eq!(
+            win_id_from_env(Some("7".to_string()), Some("1234".to_string())),
+            Some("herdr 7".to_string())
+        );
+        // 空 pane id 视同不在 herdr 里,回落到 pid。
+        assert_eq!(
+            win_id_from_env(Some(String::new()), Some("1234".to_string())),
+            Some("pid 1234".to_string())
+        );
+        assert_eq!(
+            win_id_from_env(None, Some("1234".to_string())),
+            Some("pid 1234".to_string())
+        );
+        // 两者都拿不到(如非 Unix 平台)则省略字段。
+        assert_eq!(win_id_from_env(None, None), None);
+    }
+
+    #[test]
     fn claude_pre_tool_use_event_carries_sid_and_project() {
         let input = r#"{
             "hook_event_name": "PreToolUse",
@@ -2124,9 +2303,9 @@ mod tests {
         assert_eq!(ev.sid, "0aca72b2");
         assert_eq!(ev.proj, "vibekeys_app");
         assert_eq!(ev.st, "tool");
-        // os 标签 + win_id(父进程 pid)随事件一起发。
+        // os 标签 + win_id(herdr pane id 或父 pid)随事件一起发。
         assert_eq!(ev.os.as_deref(), host_os());
-        assert_eq!(ev.win_id.as_deref(), parent_pid().as_deref());
+        assert_eq!(ev.win_id.as_deref(), win_id().as_deref());
         // Wire format: compact JSON with the session marker first, no msg field.
         let payload = String::from_utf8(ev.to_payload()).unwrap();
         assert!(payload.starts_with(r#"{"type":"session""#));
