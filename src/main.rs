@@ -1956,8 +1956,9 @@ fn init_logger() {
                     flexi_logger::Naming::Numbers,
                     flexi_logger::Cleanup::KeepLogFiles(5),
                 )
-                .duplicate_to_stdout(flexi_logger::Duplicate::All)
-                .format_for_stderr(flexi_logger::default_format)
+                // 只写文件,不回显 stdout/stderr:hook 拉起的 server 继承的是 claude
+                // 的 socket,claude 退出后写它是 EPIPE,flexi_logger 的错误通道也会
+                // 跟着失效,把正在处理请求的任务打死(/shutdown 等带日志的端点失灵)。
                 .format_for_files(flexi_logger::detailed_format)
         })
         .and_then(|logger| logger.start())
