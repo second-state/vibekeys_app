@@ -92,28 +92,18 @@ case "$MODE" in
     pane=$2
     [[ "$pane" =~ ^w[0-9]+:p[0-9A-Za-z]+$ ]] || { echo "✗ Pane format should be w<N>:p<id>, e.g. w2:p3" >&2; exit 1; }
 
-    # 1. 找一个"活在 Hyprland 窗口下"的 herdr 进程 (同 --herdr 模式)
-    herdr_window=""
+    # 1. agent focus 自己校验 pane 并完成内部跳转(无需 jq);失败即退出,
+    #    不会白切一次窗口
+    herdr agent focus "$pane" >/dev/null
+
+    # 2. 尽力把 herdr 所在的 Hyprland 窗口调到前台;非 Hyprland 环境(hyprctl
+    #    不可用或找不到窗口)时自然跳过
     for h in $(pgrep -x herdr || true); do
-      if wpid=$(find_window_ancestor "$h"); then
-        herdr_window=$wpid
+      if wpid=$(find_window_ancestor "$h" 2>/dev/null); then
+        focus_window "$wpid"
         break
       fi
     done
-    if [ -z "$herdr_window" ]; then
-      echo "✗ No open herdr client found" >&2
-      exit 1
-    fi
-
-    # 2. 校验该 pane 上确实跑着 agent
-    if ! herdr agent list | jq -e --arg p "$pane" '.result.agents[] | select(.pane_id == $p)' >/dev/null; then
-      echo "✗ No agent running on pane: $pane" >&2
-      exit 1
-    fi
-
-    # 3. 聚焦 herdr 所在窗口, 再用 agent focus 一步跳到该 agent 的 pane
-    focus_window "$herdr_window"
-    herdr agent focus "$pane" >/dev/null
     echo "✓ herdr agent focused: $pane"
     ;;
 

@@ -322,12 +322,14 @@ fn set_to_clipboard(clipboard: &mut Clipboard, text: &str) {
 }
 
 /// 处理 KEYBOARD_NOTIFY(d4f7e1b3)推送的 `{"focus":"pid N"|"herdr w2:p3"}`:
-/// 本机在 Omarchy 桌面时后台调 jump 脚本聚焦对应窗口/pane,其余情况静默忽略。
+/// 后台调 jump 脚本聚焦对应窗口/pane。herdr 跳转不依赖合成器(非 Hyprland
+/// 环境下脚本自行降级为纯 `herdr agent focus`),任何系统都执行;pid 跳转
+/// 依赖 hyprctl,仅在 Omarchy 上有效。
 async fn handle_focus_notify(data: &[u8]) {
     let Some((flag, value)) = parse_focus(data) else {
         return;
     };
-    if !is_omarchy() {
+    if flag == "--pid" && !is_omarchy() {
         return;
     }
     let Some(script) = find_jump_script() else {

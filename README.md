@@ -334,8 +334,12 @@ the bundled jump script to bring the matching window forward:
 The script ships with the plugin (`vibekeys_plugin/scripts/jump`) and is
 resolved from, in order: `$VIBEKEYS_JUMP_SCRIPT`,
 `$CLAUDE_PLUGIN_ROOT/scripts/jump`, `~/.vibekeys/scripts/jump`, and the plugin
-install cache (`~/.claude/plugins/…`). On non-Omarchy machines focus events
-are ignored.
+install cache (`~/.claude/plugins/…`).
+
+The two event types have different platform requirements: `herdr …` events
+run everywhere — on non-Hyprland systems the script skips the window raise
+and only does the in-herdr jump (`herdr agent focus`); `pid …` events need
+`hyprctl` and are therefore only handled on Omarchy.
 
 ### Wayland clipboard
 

@@ -317,7 +317,10 @@ vibekeys session abcd1234 tool
 脚本随插件分发(`vibekeys_plugin/scripts/jump`),按以下顺序解析:
 `$VIBEKEYS_JUMP_SCRIPT` → `$CLAUDE_PLUGIN_ROOT/scripts/jump` →
 `~/.vibekeys/scripts/jump` → 插件安装缓存(`~/.claude/plugins/…`)。
-非 Omarchy 机器上聚焦事件会被直接忽略。
+
+两类事件的平台要求不同:`herdr …` 事件在任何系统上都会执行——非 Hyprland 环境
+下脚本自动跳过「窗口置前」,只做 herdr 内部跳转(`herdr agent focus`);
+`pid …` 事件依赖 `hyprctl`,仅在 Omarchy 上处理。
 
 ### Wayland 剪贴板
 
