@@ -359,7 +359,7 @@ async fn handle_focus_notify(data: &[u8]) {
 
 /// 把 KEYBOARD_NOTIFY 的 payload 解析成 jump 脚本参数。
 /// 合法格式:`{"focus":"pid <数字>"}` → ("--pid", pid)、
-/// `{"focus":"herdr <ws:pane>"}` → ("--herdr", pane);其余返回 None。
+/// `{"focus":"herdr <ws:pane>"}` → ("--herdr-agent", pane);其余返回 None。
 fn parse_focus(data: &[u8]) -> Option<(&'static str, String)> {
     let value: serde_json::Value = serde_json::from_str(&String::from_utf8_lossy(data)).ok()?;
     let focus = value.get("focus")?.as_str()?;
@@ -367,7 +367,9 @@ fn parse_focus(data: &[u8]) -> Option<(&'static str, String)> {
         ("pid", id) if !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()) => {
             Some(("--pid", id.to_string()))
         }
-        ("herdr", pane) if !pane.is_empty() => Some(("--herdr", pane.to_string())),
+        // HERDR_PANE_ID 标识的就是跑 agent 的 pane,用 --herdr-agent 直达 agent
+        // 所在 pane(而不是 --herdr 的普通 workspace/tab 跳转)。
+        ("herdr", pane) if !pane.is_empty() => Some(("--herdr-agent", pane.to_string())),
         _ => None,
     }
 }
@@ -2293,7 +2295,7 @@ mod tests {
         );
         assert_eq!(
             parse_focus(br#"{"focus":"herdr w2:p3"}"#),
-            Some(("--herdr", "w2:p3".to_string()))
+            Some(("--herdr-agent", "w2:p3".to_string()))
         );
     }
 
