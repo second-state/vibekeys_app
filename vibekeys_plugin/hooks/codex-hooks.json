@@ -63,7 +63,7 @@
                     {
                         "type": "command",
                         "command": "vibekeys codex",
-                        "timeoutSec": 3
+                        "timeout": 3
                     }
                 ]
             }
