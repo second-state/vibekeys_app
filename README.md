@@ -300,6 +300,49 @@ Add to `.claude/settings.json`:
 }
 ```
 
+## Omarchy / Hyprland Integration
+
+On [Omarchy](https://omarchy.org) (Arch + Hyprland + the herdr terminal
+multiplexer), vibekeys gets a few extras. Everything below is gated on
+`DESKTOP_SESSION=omarchy` and is a no-op on other systems.
+
+### Host labeling
+
+Session events carry an `os` field so the keyboard can tell machines apart:
+`"omarchy"` on Omarchy, `"linux"` on other Linux, `"macos"` / `"win"` elsewhere.
+
+### Session identity (`win_id`)
+
+Each event also carries a `win_id` identifying where the session lives, with
+a source prefix:
+
+- `herdr w2:p3` — inside the herdr terminal multiplexer: the pane id from
+  `HERDR_PANE_ID`, stable across every hook fired in that pane
+- `pid 1234` — fallback: the hook process's parent pid
+
+### Focus jump (keyboard → host)
+
+When the keyboard pushes a focus event over its notify characteristic, e.g.
+`{"focus":"herdr w2:p3"}` or `{"focus":"pid 1234"}`, vibekeys on Omarchy runs
+the bundled jump script to bring the matching window forward:
+
+- `herdr ...` — focuses the herdr window and jumps straight to the agent's
+  pane (`herdr agent focus`)
+- `pid ...` — walks the process chain up to the Hyprland window that owns the
+  pid and focuses it (`hyprctl`)
+
+The script ships with the plugin (`vibekeys_plugin/scripts/jump`) and is
+resolved from, in order: `$VIBEKEYS_JUMP_SCRIPT`,
+`$CLAUDE_PLUGIN_ROOT/scripts/jump`, `~/.vibekeys/scripts/jump`, and the plugin
+install cache (`~/.claude/plugins/…`). On non-Omarchy machines focus events
+are ignored.
+
+### Wayland clipboard
+
+Omarchy is Wayland-first, so ASR transcription results are written to the
+Wayland clipboard natively (X11 elsewhere), and voice paste works in
+Wayland-native apps.
+
 ## ASR Configuration
 
 Configure the ASR (Automatic Speech Recognition) service for voice features:

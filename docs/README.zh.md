@@ -287,6 +287,43 @@ vibekeys session abcd1234 tool
 }
 ```
 
+## Omarchy / Hyprland 集成
+
+在 [Omarchy](https://omarchy.org)(Arch + Hyprland + herdr 终端复用器)上,vibekeys
+有一组增强能力。以下全部以 `DESKTOP_SESSION=omarchy` 为开关,其他系统上自动无效。
+
+### 宿主机标签
+
+会话事件携带 `os` 字段供键盘区分来源机器:Omarchy 上为 `"omarchy"`,其他 Linux 为
+`"linux"`,此外还有 `"macos"` / `"win"`。
+
+### 会话身份(`win_id`)
+
+每个事件还带 `win_id`,标识会话所在的窗口/pane,值带来源前缀:
+
+- `herdr w2:p3` —— 在 herdr 终端复用器里:取 `HERDR_PANE_ID`,同一 pane 内所有
+  hook 的值稳定一致
+- `pid 1234` —— 兜底:hook 进程的父进程 pid
+
+### 聚焦跳转(键盘 → 主机)
+
+键盘通过 notify 特征推送聚焦事件,例如 `{"focus":"herdr w2:p3"}` 或
+`{"focus":"pid 1234"}`,Omarchy 上的 vibekeys 会调用随插件附带的 jump 脚本,
+把对应窗口调到前台:
+
+- `herdr ...` —— 聚焦 herdr 窗口并直达 agent 所在 pane(`herdr agent focus`)
+- `pid ...` —— 沿进程链向上找到拥有该 pid 的 Hyprland 窗口并聚焦(`hyprctl`)
+
+脚本随插件分发(`vibekeys_plugin/scripts/jump`),按以下顺序解析:
+`$VIBEKEYS_JUMP_SCRIPT` → `$CLAUDE_PLUGIN_ROOT/scripts/jump` →
+`~/.vibekeys/scripts/jump` → 插件安装缓存(`~/.claude/plugins/…`)。
+非 Omarchy 机器上聚焦事件会被直接忽略。
+
+### Wayland 剪贴板
+
+Omarchy 以 Wayland 为主,ASR 转写结果原生写入 Wayland 剪贴板(其他平台写 X11),
+语音粘贴在 Wayland 原生应用中开箱即用。
+
 ## ASR 配置
 
 配置 ASR（自动语音识别）服务用于语音功能：
