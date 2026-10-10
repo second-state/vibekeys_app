@@ -29,3 +29,8 @@ dialoguer = "0.11"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# musl 静态构建:libdbus(btleplug → bluez 的 BLE 后端)没有 musl 预编译包,
+# 用 vendored feature 从源码编译,免装系统 libdbus。glibc 构建不受影响。
+[target.'cfg(all(target_os = "linux", target_env = "musl"))'.dependencies]
+dbus = { version = "0.9", features = ["vendored"] }
