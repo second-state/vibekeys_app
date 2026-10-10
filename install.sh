@@ -193,13 +193,15 @@ esac
 # 有 claude 问 Claude Code,有 codex 问 Codex;两个都装了就依次都问一遍。
 # 只在本机有对应 CLI 时才问;没有,装了 plugin 也用不了,直接跳过。
 ask_plugin() {
-  # $1 = CLI 名(claude/codex),$2 = 人读名,$3 = add 子命令
-  local cli="$1" label="$2" addcmd="$3"
+  # $1 = CLI 名(claude/codex),$2 = 人读名,$3 = plugin 子动作(install/add)。
+  # 注意执行行必须拆成 "$cli" plugin "$action" 三个参数;若把 "plugin add"
+  # 整个作为一个参数传下来,引号展开后会变成 'plugin add' 一个词,CLI 不认。
+  local cli="$1" label="$2" action="$3"
 
   if [ "${VIBEKEYS_NONINTERACTIVE:-0}" = "1" ]; then
     echo "note: to show $label status on the keyboard, also install the plugin:"
     echo "  $cli plugin marketplace add second-state/marketplace"
-    echo "  $cli $addcmd vibekeys@second-state-tools"
+    echo "  $cli plugin $action vibekeys@second-state-tools"
     return 0
   fi
 
@@ -214,7 +216,7 @@ ask_plugin() {
   else
     echo "note: to show $label status on the keyboard, also install the plugin:"
     echo "  $cli plugin marketplace add second-state/marketplace"
-    echo "  $cli $addcmd vibekeys@second-state-tools"
+    echo "  $cli plugin $action vibekeys@second-state-tools"
     return 0
   fi
 
@@ -222,23 +224,23 @@ ask_plugin() {
     [nN]*)
       echo "skipped — install it later with:"
       echo "  $cli plugin marketplace add second-state/marketplace"
-      echo "  $cli $addcmd vibekeys@second-state-tools"
+      echo "  $cli plugin $action vibekeys@second-state-tools"
       ;;
     *)
       echo "Adding marketplace..."
       if "$cli" plugin marketplace add second-state/marketplace &&
-        "$cli" "$addcmd" vibekeys@second-state-tools; then
+        "$cli" plugin "$action" vibekeys@second-state-tools; then
         echo "$label plugin installed — vibekeys will now show agent status on the keyboard."
       else
         echo "$label plugin install failed — you can retry later with:" >&2
         echo "  $cli plugin marketplace add second-state/marketplace" >&2
-        echo "  $cli $addcmd vibekeys@second-state-tools" >&2
+        echo "  $cli plugin $action vibekeys@second-state-tools" >&2
       fi
       ;;
   esac
 }
 
 if [ "$FIRST_INSTALL" = "1" ]; then
-  command -v claude >/dev/null 2>&1 && ask_plugin claude "Claude Code" "plugin install"
-  command -v codex >/dev/null 2>&1 && ask_plugin codex "Codex" "plugin add"
+  command -v claude >/dev/null 2>&1 && ask_plugin claude "Claude Code" "install"
+  command -v codex >/dev/null 2>&1 && ask_plugin codex "Codex" "add"
 fi
