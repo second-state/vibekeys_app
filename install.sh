@@ -73,6 +73,12 @@ command -v curl >/dev/null 2>&1 || {
   exit 1
 }
 
+# 首次安装检测(装完后据此决定要不要问装 Claude Code plugin):
+# 安装目录里没有 vibekeys、PATH 上也没有 → 视为首次。
+FIRST_INSTALL=1
+[ -e "$INSTALL_DIR/$NAME" ] && FIRST_INSTALL=0
+command -v vibekeys >/dev/null 2>&1 && FIRST_INSTALL=0
+
 mkdir -p "$INSTALL_DIR"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
@@ -161,8 +167,7 @@ case ":$PATH:" in
 
     if [ "${VIBEKEYS_NONINTERACTIVE:-0}" = "1" ]; then
       echo "note: $INSTALL_DIR is not on your PATH — add it manually" # 非交互:不问
-      return 0
-    fi
+    else
     prompt="$INSTALL_DIR is not on your PATH. Add it to your shell rc file? [Y/n] "
     ans=""
     if [ -t 0 ]; then
@@ -180,5 +185,60 @@ case ":$PATH:" in
       [nN]*) echo "skipped — add $INSTALL_DIR to your PATH manually if needed" ;;
       *) add_to_rc ;;
     esac
+    fi
     ;;
 esac
+
+# --- 首次安装:按顺序询问是否安装 agent plugin(键盘上实时显示 agent 状态)---
+# 有 claude 问 Claude Code,有 codex 问 Codex;两个都装了就依次都问一遍。
+# 只在本机有对应 CLI 时才问;没有,装了 plugin 也用不了,直接跳过。
+ask_plugin() {
+  # $1 = CLI 名(claude/codex),$2 = 人读名,$3 = add 子命令
+  local cli="$1" label="$2" addcmd="$3"
+
+  if [ "${VIBEKEYS_NONINTERACTIVE:-0}" = "1" ]; then
+    echo "note: to show $label status on the keyboard, also install the plugin:"
+    echo "  $cli plugin marketplace add second-state/marketplace"
+    echo "  $cli $addcmd vibekeys@second-state-tools"
+    return 0
+  fi
+
+  local prompt="Install the $label plugin (shows agent status on the keyboard)? [Y/n] "
+  local ans=""
+  if [ -t 0 ]; then
+    read -r -p "$prompt" ans
+  elif [ -t 1 ] && [ -r /dev/tty ]; then
+    # curl | bash: stdin is the script itself, ask on the terminal instead
+    printf '%s' "$prompt" > /dev/tty
+    read -r ans < /dev/tty
+  else
+    echo "note: to show $label status on the keyboard, also install the plugin:"
+    echo "  $cli plugin marketplace add second-state/marketplace"
+    echo "  $cli $addcmd vibekeys@second-state-tools"
+    return 0
+  fi
+
+  case "$ans" in
+    [nN]*)
+      echo "skipped — install it later with:"
+      echo "  $cli plugin marketplace add second-state/marketplace"
+      echo "  $cli $addcmd vibekeys@second-state-tools"
+      ;;
+    *)
+      echo "Adding marketplace..."
+      if "$cli" plugin marketplace add second-state/marketplace &&
+        "$cli" "$addcmd" vibekeys@second-state-tools; then
+        echo "$label plugin installed — vibekeys will now show agent status on the keyboard."
+      else
+        echo "$label plugin install failed — you can retry later with:" >&2
+        echo "  $cli plugin marketplace add second-state/marketplace" >&2
+        echo "  $cli $addcmd vibekeys@second-state-tools" >&2
+      fi
+      ;;
+  esac
+}
+
+if [ "$FIRST_INSTALL" = "1" ]; then
+  command -v claude >/dev/null 2>&1 && ask_plugin claude "Claude Code" "plugin install"
+  command -v codex >/dev/null 2>&1 && ask_plugin codex "Codex" "plugin add"
+fi
