@@ -55,6 +55,21 @@ claude plugin marketplace add second-state/marketplace
 claude plugin install vibekeys@second-state-tools
 ```
 
+### Install Codex Plugin
+
+For Codex, install the same plugin from the marketplace:
+
+```bash
+# Add Second State marketplace
+codex plugin marketplace add second-state/marketplace
+
+# Install VibeKeys plugin
+codex plugin add vibekeys@second-state-tools
+```
+
+> `install.sh` offers to install the plugin for you on first install — it asks
+> once for each agent CLI found on your machine.
+
 ## Usage
 
 ### Server Mode

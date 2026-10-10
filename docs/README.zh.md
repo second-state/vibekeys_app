@@ -53,6 +53,20 @@ claude plugin marketplace add second-state/marketplace
 claude plugin install vibekeys@second-state-tools
 ```
 
+### 安装 Codex 插件
+
+Codex 从同一个 marketplace 安装：
+
+```bash
+# 添加 Second State marketplace
+codex plugin marketplace add second-state/marketplace
+
+# 安装 VibeKeys 插件
+codex plugin add vibekeys@second-state-tools
+```
+
+> `install.sh` 在首次安装时会主动询问是否安装插件——检测到哪个 agent CLI 就问哪个。
+
 ## 用法
 
 ### 服务器模式
