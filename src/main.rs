@@ -344,6 +344,11 @@ async fn handle_focus_notify(data: &[u8]) {
     match tokio::process::Command::new(&script)
         .arg(flag)
         .arg(&value)
+        // 子进程不能继承 server 的 stdio:hook 拉起的 server,其 stdout/stderr
+        // 是 claude 的 socket,claude 退出后写它会 SIGPIPE 杀掉脚本(本进程
+        // 无所谓,Rust 自身忽略 SIGPIPE,但 spawn 出来的子进程是默认行为)。
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
     {
         Ok(mut child) => {
