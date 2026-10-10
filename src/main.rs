@@ -1,5 +1,7 @@
 use arboard::Clipboard;
 
+mod update;
+
 use axum::{
     extract::State,
     routing::{get, post},
@@ -108,6 +110,11 @@ enum Command {
         sid: String,
         /// Status: work | tool | post | perm | note | done | err | end
         status: String,
+    },
+    /// Update vibekeys to the latest release (or a specific tag)
+    Update {
+        /// Release tag to install (default: latest stable, prereleases excluded)
+        tag: Option<String>,
     },
 }
 
@@ -1206,7 +1213,7 @@ async fn get_config_snapshot(port: u16) -> Result<String, String> {
 
 fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
     match cmd {
-        Command::Start | Command::Stop => None,
+        Command::Start | Command::Stop | Command::Update { .. } => None,
         Command::Send { message } => {
             let (tx, _) = oneshot::channel();
             Some(BleCmd::Send {
@@ -1333,7 +1340,7 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
 
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
-        Command::Start | Command::Stop => unreachable!(),
+        Command::Start | Command::Stop | Command::Update { .. } => unreachable!(),
         Command::Send { message } => match send_command(port, message).await {
             Ok(resp) => print!("{}", resp),
             Err(e) => eprintln!("{}", e),
@@ -1996,6 +2003,15 @@ async fn main() {
     init_logger();
     let cli = Cli::parse();
     let port = get_port();
+
+    // Handle update — self-upgrades the binary in place, no server involved.
+    if let Command::Update { tag } = cli.command {
+        if let Err(e) = update::run(tag).await {
+            eprintln!("Update error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // Handle stop
     if matches!(cli.command, Command::Stop) {
