@@ -1,0 +1,6 @@
+# vendored libdbus 的 aarch64 代码引用 GCC 的 LSE 原子运行时助手
+# (__aarch64_ldadd4_sync 等,位于 libgcc)。rustc 对 musl target 的链接行带
+# -nodefaultlibs,不会自动补 -lgcc,因此这里显式加上。
+# 仅影响 aarch64-unknown-linux-musl;x86_64 musl 的原子操作是内联的,不受影响。
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "link-arg=-lgcc"]

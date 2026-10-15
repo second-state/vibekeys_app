@@ -24,6 +24,9 @@ jobs:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             artifact: vibekeys-linux-x64
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            artifact: vibekeys-linux-arm64
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             artifact: vibekeys-windows-x64.exe
@@ -38,11 +41,12 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Linux 用 musl 静态链接:不依赖构建机 glibc,任何 x86_64 Linux 都能跑。
+      # Linux 用 musl 静态链接:不依赖构建机 glibc,任何同架构 Linux 都能跑。
+      # arm64 job 跑在原生 arm runner 上,和 x86 一样只需 musl-tools,无需交叉编译。
       # ring(TLS 后端)含 C 代码,musl 下需要 musl-gcc;libdbus 由 vendored
       # feature 从源码编译(见 Cargo.toml 的 musl target 段)。
       - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
+        if: contains(matrix.target, 'linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build
