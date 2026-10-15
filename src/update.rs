@@ -19,6 +19,7 @@ fn detect() -> Result<(String, String), String> {
     let arch = std::env::consts::ARCH;
     match (os, arch) {
         ("linux", "x86_64") => Ok(("vibekeys-linux-x64".into(), "vibekeys".into())),
+        ("linux", "aarch64") => Ok(("vibekeys-linux-arm64".into(), "vibekeys".into())),
         ("macos", "aarch64") => Ok(("vibekeys-macos-arm64".into(), "vibekeys".into())),
         ("windows", "x86_64") => Ok(("vibekeys-windows-x64.exe".into(), "vibekeys.exe".into())),
         (os, arch) => Err(format!(
