@@ -10,6 +10,7 @@ use axum::{
 use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Input, Password, Select};
 use std::io::{self, Read};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
@@ -452,14 +453,15 @@ enum SelectResult {
     Notification(btleplug::api::ValueNotification),
 }
 
-async fn loop_check_connection(peripheral: &PlatformPeripheral) {
+async fn loop_check_connection(peripheral: &PlatformPeripheral, ble_connected: &AtomicBool) {
     loop {
-        if !check_connected(peripheral).await {
+        let connected = check_connected(peripheral).await;
+        ble_connected.store(connected, Ordering::Relaxed);
+        if !connected {
             log::info!("BLE disconnected, exiting BLE task");
             return;
-        } else {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
         }
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
     }
 }
 
@@ -467,6 +469,7 @@ async fn select_rx_and_notify(
     rx: &mut mpsc::Receiver<BleCmd>,
     peripheral: &PlatformPeripheral,
     notifications: &mut Option<NotificationStream>,
+    ble_connected: &AtomicBool,
 ) -> Option<SelectResult> {
     // 通知流创建失败时用 pending 兜底:只丢通知,不影响 Send/Read 命令通道。
     let next_notification = async {
@@ -482,7 +485,7 @@ async fn select_rx_and_notify(
         notification = next_notification => {
             notification.map(SelectResult::Notification)
         }
-        _ = loop_check_connection(peripheral) => {
+        _ = loop_check_connection(peripheral, ble_connected) => {
             None
         }
     }
@@ -502,7 +505,11 @@ async fn check_connected(peripheral: &PlatformPeripheral) -> bool {
     }
 }
 
-async fn ble_task(mut rx: mpsc::Receiver<BleCmd>, last_activity: Arc<Mutex<std::time::Instant>>) {
+async fn ble_task(
+    mut rx: mpsc::Receiver<BleCmd>,
+    last_activity: Arc<Mutex<std::time::Instant>>,
+    ble_connected: Arc<AtomicBool>,
+) {
     // Initial connection with timeout
     log::info!("Scanning for BLE device...");
     let peripheral = match try_ble_connect().await {
@@ -535,8 +542,11 @@ async fn ble_task(mut rx: mpsc::Receiver<BleCmd>, last_activity: Arc<Mutex<std::
         }
     };
 
+    // 连接成功,看门狗据此判断"空闲但仍在使用中"。
+    ble_connected.store(true, Ordering::Relaxed);
+
     loop {
-        match select_rx_and_notify(&mut rx, &peripheral, &mut notifications).await {
+        match select_rx_and_notify(&mut rx, &peripheral, &mut notifications, &ble_connected).await {
             Some(SelectResult::BleCmd(BleCmd::Send {
                 char_uuid,
                 data,
@@ -986,6 +996,8 @@ async fn server_url_handler(State(state): State<Arc<AppState>>, body: String) ->
 async fn run_server(port: u16, initial_cmds: Vec<Command>) {
     let (ble_tx, ble_rx) = mpsc::channel(16);
     let notify = Arc::new(tokio::sync::Notify::new());
+    // BLE 连接状态,由 BLE 任务每 5s 刷新;空闲看门狗据此决定是否退出。
+    let ble_connected = Arc::new(AtomicBool::new(false));
 
     for ble_cmd in initial_cmds.into_iter().filter_map(command_to_blecmd) {
         if ble_tx.send(ble_cmd).await.is_err() {
@@ -1001,25 +1013,37 @@ async fn run_server(port: u16, initial_cmds: Vec<Command>) {
 
     let notify_ = notify.clone();
     let last_activity = state.last_activity.clone();
+    let connected_ = ble_connected.clone();
     tokio::spawn(async move {
-        ble_task(ble_rx, last_activity).await;
+        ble_task(ble_rx, last_activity, connected_.clone()).await;
+        connected_.store(false, Ordering::Relaxed);
         notify_.notify_waiters();
         log::warn!("BLE task ended, shutting down server");
     });
 
-    // 空闲看门狗:hook 拉起的 server 不该永久驻留,无使用达到阈值即自动退出。
+    // 空闲看门狗:长时间无使用时,若 BLE 连接仍在(键盘还开着)则继续驻留;
+    // 连接已断开才真正退出。
     {
         let notify = notify.clone();
         let last_activity = state.last_activity.clone();
+        let ble_connected = ble_connected.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                 let idle = last_activity.lock().unwrap().elapsed();
-                if idle >= IDLE_TIMEOUT {
-                    notify.notify_waiters();
-                    log::info!("Idle for {:?}, shutting down", idle);
-                    return;
+                if idle < IDLE_TIMEOUT {
+                    continue;
                 }
+                if ble_connected.load(Ordering::Relaxed) {
+                    log::debug!(
+                        "Idle for {:?}, but BLE still connected - staying alive",
+                        idle
+                    );
+                    continue;
+                }
+                notify.notify_waiters();
+                log::info!("Idle for {:?} and BLE disconnected, shutting down", idle);
+                return;
             }
         });
     }
