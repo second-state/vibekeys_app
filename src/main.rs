@@ -184,11 +184,21 @@ async fn find_peripheral(
     target_service: Uuid,
 ) -> anyhow::Result<Option<PlatformPeripheral>> {
     for p in peripherals {
-        if let Some(props) = p.properties().await? {
-            if props.services.iter().any(|s| *s == target_service) {
-                return Ok(Some(p.clone()));
-            }
+        let Ok(Some(props)) = p.properties().await else {
+            continue;
+        };
+        if !props.services.iter().any(|s| *s == target_service) {
+            continue;
         }
+        // 缓存幽灵过滤:BlueZ 永久缓存连过一次的设备,关机后仍在 peripherals()
+        // 列表里且服务信息可解析,会被上面的服务匹配选中,connect() 对着关机
+        // 设备干等,浪费整个扫描窗口。活着的设备二选一:已连接(开机自动重连)
+        // 或在广播(rssi 有值);缓存幽灵两者皆无。
+        let connected = check_connected(p).await;
+        if !connected && props.rssi.is_none() {
+            continue;
+        }
+        return Ok(Some(p.clone()));
     }
     Ok(None)
 }
@@ -340,13 +350,17 @@ async fn handle_focus_notify(data: &[u8]) {
     if flag == "--pid" && !is_omarchy() {
         return;
     }
-    let Some(script) = find_jump_script() else {
-        log::warn!(
-            "focus event {} {} ignored: jump script not found",
-            flag,
-            value
-        );
-        return;
+    let script = match find_jump_script() {
+        Ok(script) => script,
+        Err(checked) => {
+            log::warn!(
+                "focus event {} {} ignored: jump script not found (checked: {})",
+                flag,
+                value,
+                checked
+            );
+            return;
+        }
     };
     log::info!("jump {} {}", flag, value);
     match tokio::process::Command::new(&script)
@@ -389,33 +403,66 @@ fn parse_focus(data: &[u8]) -> Option<(&'static str, String)> {
     }
 }
 
-/// 定位 jump 脚本:显式 env > 插件根(hook 链路启动时注入 CLAUDE_PLUGIN_ROOT)>
-/// ~/.vibekeys/scripts > 插件市场安装目录。找不到返回 None。
-fn find_jump_script() -> Option<std::path::PathBuf> {
+/// jump 脚本的候选来源,按优先级排列(来源标签, 路径)。
+fn jump_script_candidates() -> Vec<(&'static str, std::path::PathBuf)> {
+    let mut out = Vec::new();
     if let Ok(p) = std::env::var("VIBEKEYS_JUMP_SCRIPT") {
-        let p = std::path::PathBuf::from(p);
-        if p.is_file() {
-            return Some(p);
-        }
+        out.push(("$VIBEKEYS_JUMP_SCRIPT", std::path::PathBuf::from(p)));
     }
     if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
-        let p = std::path::PathBuf::from(root).join("scripts").join("jump");
-        if p.is_file() {
-            return Some(p);
-        }
+        out.push((
+            "$CLAUDE_PLUGIN_ROOT",
+            std::path::PathBuf::from(root).join("scripts").join("jump"),
+        ));
     }
-    let home = dirs::home_dir()?;
-    for dir in [
-        home.join(".vibekeys").join("scripts"),
-        home.join(".claude").join("plugins"),
-    ] {
-        if dir.is_dir() {
-            if let Some(found) = find_jump_in_plugins(&dir, 6) {
-                return Some(found);
+    if let Some(home) = dirs::home_dir() {
+        out.push((
+            "~/.vibekeys/scripts",
+            home.join(".vibekeys").join("scripts").join("jump"),
+        ));
+    }
+    out
+}
+
+/// 定位 jump 脚本:显式 env > 插件根(hook 链路启动时注入 CLAUDE_PLUGIN_ROOT)>
+/// ~/.vibekeys/scripts > 插件市场安装目录。找不到时返回 Err,内容为已检查的
+/// 候选清单,供日志展示。
+/// 候选解析的纯逻辑:按序取第一个存在的路径;全部未命中时返回 Err,
+/// 内容为按序排列的检查清单(来源标签 + 路径 + 失败原因)。
+fn resolve_jump_script(
+    candidates: &[(String, std::path::PathBuf)],
+    plugins_dir: Option<std::path::PathBuf>,
+) -> Result<std::path::PathBuf, String> {
+    let mut checked = Vec::new();
+    for (source, path) in candidates {
+        if path.is_file() {
+            return Ok(path.clone());
+        }
+        checked.push(format!("{}: {} (not found)", source, path.display()));
+    }
+    if let Some(plugins) = plugins_dir {
+        if plugins.is_dir() {
+            if let Some(found) = find_jump_in_plugins(&plugins, 6) {
+                return Ok(found);
             }
+            checked.push(format!(
+                "plugins walk: {} (no vibekeys*/scripts/jump)",
+                plugins.display()
+            ));
+        } else {
+            checked.push(format!("plugins walk: {} (missing)", plugins.display()));
         }
     }
-    None
+    Err(checked.join("; "))
+}
+
+fn find_jump_script() -> Result<std::path::PathBuf, String> {
+    let candidates = jump_script_candidates()
+        .into_iter()
+        .map(|(source, path)| (source.to_string(), path))
+        .collect::<Vec<_>>();
+    let plugins_dir = dirs::home_dir().map(|home| home.join(".claude").join("plugins"));
+    resolve_jump_script(&candidates, plugins_dir)
 }
 
 /// 在 `dir` 下(限深)找 `vibekeys*/scripts/jump`。
@@ -2331,6 +2378,37 @@ mod tests {
         // Degenerate paths just yield an empty name.
         assert_eq!(workspace_name("/"), "");
         assert_eq!(workspace_name(""), "");
+    }
+
+    #[test]
+    fn resolve_jump_script_reports_checked_candidates_on_miss() {
+        let dir = std::env::temp_dir().join("vibekeys-jump-resolve-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let hit = dir.join("hit");
+        std::fs::write(&hit, b"").unwrap();
+
+        // 有命中:按序取第一个存在的路径,不走插件目录遍历。
+        let candidates = vec![
+            ("a".to_string(), dir.join("missing-1")),
+            ("b".to_string(), hit.clone()),
+        ];
+        assert_eq!(
+            resolve_jump_script(&candidates, Some(dir.clone())).unwrap(),
+            hit
+        );
+
+        // 全部未命中:Err 按序列出检查过的候选,插件目录缺失也写明原因。
+        let candidates = vec![
+            ("env".to_string(), dir.join("missing-1")),
+            ("home".to_string(), dir.join("missing-2")),
+        ];
+        let err = resolve_jump_script(&candidates, Some(dir.join("no-such-dir"))).unwrap_err();
+        assert!(err.contains("env: "), "{err}");
+        assert!(err.contains("(not found)"), "{err}");
+        assert!(err.contains("plugins walk:"), "{err}");
+        assert!(err.contains("(missing)"), "{err}");
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
