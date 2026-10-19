@@ -329,8 +329,10 @@ vibekeys session abcd1234 tool
 - `pid ...` —— 沿进程链向上找到拥有该 pid 的 Hyprland 窗口并聚焦(`hyprctl`)
 
 脚本随插件分发(`vibekeys_plugin/scripts/jump`),按以下顺序解析:
-`$VIBEKEYS_JUMP_SCRIPT` → `$CLAUDE_PLUGIN_ROOT/scripts/jump` →
-`~/.vibekeys/scripts/jump` → 插件安装缓存(`~/.claude/plugins/…`)。
+`$VIBEKEYS_JUMP_SCRIPT` → `~/.vibekeys/scripts/jump`(用户自定义,优先于插件副本)→
+`$CLAUDE_PLUGIN_ROOT/scripts/jump` → 插件安装缓存(`~/.claude/plugins/…`)。
+执行 `vibekeys install-script` 可把内置副本安装到 `~/.vibekeys/scripts/jump`
+(幂等,重跑即更新)。
 
 两类事件的平台要求不同:`herdr …` 事件在任何系统上都会执行——非 Hyprland 环境
 下脚本自动跳过「窗口置前」,只做 herdr 内部跳转(`herdr agent focus`);

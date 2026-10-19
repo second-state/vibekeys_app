@@ -103,6 +103,8 @@ enum Command {
         /// server URL - omit for interactive mode
         url: Option<String>,
     },
+    /// Install the bundled jump script ($VIBEKEYS_JUMP_SCRIPT if set, else ~/.vibekeys/scripts/jump)
+    InstallScript,
     /// Send a plain text notification to the keyboard display
     Notify { message: String },
     /// Send one multi-session status event (sid + project + status, no text)
@@ -403,17 +405,46 @@ fn parse_focus(data: &[u8]) -> Option<(&'static str, String)> {
     }
 }
 
+/// 随二进制内置的 jump 脚本,与插件分发的是同一份仓库文件。
+const BUNDLED_JUMP_SCRIPT: &str = include_str!("../vibekeys_plugin/scripts/jump");
+
+/// 把内置 jump 脚本安装到查找顺序的第一候选位:设了 $VIBEKEYS_JUMP_SCRIPT
+/// 就装到那里,否则装到 ~/.vibekeys/scripts/jump。已存在则覆盖,Unix 上补
+/// 执行权限。返回 (目标路径, 来源标签)。
+fn install_jump_script() -> anyhow::Result<(std::path::PathBuf, &'static str)> {
+    let (target, source) = match std::env::var("VIBEKEYS_JUMP_SCRIPT") {
+        Ok(p) => (
+            std::path::PathBuf::from(p),
+            "$VIBEKEYS_JUMP_SCRIPT (priority #1)",
+        ),
+        Err(_) => {
+            let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
+            (
+                home.join(".vibekeys").join("scripts").join("jump"),
+                "priority #2, before the plugin copy",
+            )
+        }
+    };
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    std::fs::write(&target, BUNDLED_JUMP_SCRIPT)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok((target, source))
+}
+
 /// jump 脚本的候选来源,按优先级排列(来源标签, 路径)。
+/// 用户自放的 ~/.vibekeys/scripts 优先于插件自带副本,便于本机定制。
 fn jump_script_candidates() -> Vec<(&'static str, std::path::PathBuf)> {
     let mut out = Vec::new();
     if let Ok(p) = std::env::var("VIBEKEYS_JUMP_SCRIPT") {
         out.push(("$VIBEKEYS_JUMP_SCRIPT", std::path::PathBuf::from(p)));
-    }
-    if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
-        out.push((
-            "$CLAUDE_PLUGIN_ROOT",
-            std::path::PathBuf::from(root).join("scripts").join("jump"),
-        ));
     }
     if let Some(home) = dirs::home_dir() {
         out.push((
@@ -421,12 +452,18 @@ fn jump_script_candidates() -> Vec<(&'static str, std::path::PathBuf)> {
             home.join(".vibekeys").join("scripts").join("jump"),
         ));
     }
+    if let Ok(root) = std::env::var("CLAUDE_PLUGIN_ROOT") {
+        out.push((
+            "$CLAUDE_PLUGIN_ROOT",
+            std::path::PathBuf::from(root).join("scripts").join("jump"),
+        ));
+    }
     out
 }
 
-/// 定位 jump 脚本:显式 env > 插件根(hook 链路启动时注入 CLAUDE_PLUGIN_ROOT)>
-/// ~/.vibekeys/scripts > 插件市场安装目录。找不到时返回 Err,内容为已检查的
-/// 候选清单,供日志展示。
+/// 定位 jump 脚本:显式 env > ~/.vibekeys/scripts > 插件根(hook 链路启动时
+/// 注入 CLAUDE_PLUGIN_ROOT)> 插件市场安装目录。找不到时返回 Err,内容为已
+/// 检查的候选清单,供日志展示。
 /// 候选解析的纯逻辑:按序取第一个存在的路径;全部未命中时返回 Err,
 /// 内容为按序排列的检查清单(来源标签 + 路径 + 失败原因)。
 fn resolve_jump_script(
@@ -1284,7 +1321,8 @@ async fn get_config_snapshot(port: u16) -> Result<String, String> {
 
 fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
     match cmd {
-        Command::Start | Command::Stop | Command::Update { .. } => None,
+        // InstallScript 在 main() 里处理,不会走到这里。
+        Command::Start | Command::Stop | Command::Update { .. } | Command::InstallScript => None,
         Command::Send { message } => {
             let (tx, _) = oneshot::channel();
             Some(BleCmd::Send {
@@ -1411,7 +1449,8 @@ fn command_to_blecmd(cmd: Command) -> Option<BleCmd> {
 
 async fn forward_command(port: u16, cmd: &Command) {
     match cmd {
-        Command::Start | Command::Stop | Command::Update { .. } => unreachable!(),
+        // InstallScript 在 main() 里处理,不会走到这里。
+        Command::Start | Command::Stop | Command::Update { .. } | Command::InstallScript => {}
         Command::Send { message } => match send_command(port, message).await {
             Ok(resp) => print!("{}", resp),
             Err(e) => eprintln!("{}", e),
@@ -2080,6 +2119,20 @@ async fn main() {
         if let Err(e) = update::run(tag).await {
             eprintln!("Update error: {e}");
             std::process::exit(1);
+        }
+        return;
+    }
+
+    // Handle install-script — writes the bundled jump script, no server involved.
+    if matches!(cli.command, Command::InstallScript) {
+        match install_jump_script() {
+            Ok((path, source)) => {
+                println!("jump script installed: {} ({})", path.display(), source)
+            }
+            Err(e) => {
+                eprintln!("install failed: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

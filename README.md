@@ -347,9 +347,11 @@ the bundled jump script to bring the matching window forward:
   pid and focuses it (`hyprctl`)
 
 The script ships with the plugin (`vibekeys_plugin/scripts/jump`) and is
-resolved from, in order: `$VIBEKEYS_JUMP_SCRIPT`,
-`$CLAUDE_PLUGIN_ROOT/scripts/jump`, `~/.vibekeys/scripts/jump`, and the plugin
-install cache (`~/.claude/plugins/…`).
+resolved from, in order: `$VIBEKEYS_JUMP_SCRIPT`, `~/.vibekeys/scripts/jump`
+(user override — takes precedence over the plugin copy),
+`$CLAUDE_PLUGIN_ROOT/scripts/jump`, and the plugin install cache
+(`~/.claude/plugins/…`). Run `vibekeys install-script` to place the bundled
+copy at `~/.vibekeys/scripts/jump` (idempotent, re-run to update).
 
 The two event types have different platform requirements: `herdr …` events
 run everywhere — on non-Hyprland systems the script skips the window raise
