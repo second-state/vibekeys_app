@@ -11,15 +11,30 @@ Control the VibeKeys MAX BLE keyboard device from Claude Code. Use this skill to
 
 The `vibekeys` binary must be installed and the VibeKeys MAX device must be powered on and within Bluetooth range.
 
+### One-line installer
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/second-state/vibekeys_app/main/install.sh | bash
+```
+
+Installs the binary, offers to install the plugins, and sets up `vibekeys update` for in-place upgrades. Already installed? Just run `vibekeys update`.
+
 ### Download from GitHub Releases
 
-Download the prebuilt binary for your platform from [Releases](https://github.com/second-state/vibekeys_app/releases).
+Download the prebuilt binary for your platform from [Releases](https://github.com/second-state/vibekeys_app/releases). Linux builds are static musl binaries (x64 and arm64).
 
-**Linux:**
+**Linux (x64):**
 ```bash
 wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
 chmod +x vibekeys-linux-x64
 sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**Linux (arm64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-arm64
+chmod +x vibekeys-linux-arm64
+sudo mv vibekeys-linux-arm64 /usr/local/bin/vibekeys
 ```
 
 **macOS (ARM64):**
@@ -60,6 +75,25 @@ vibekeys start
 # Stop the server
 vibekeys stop
 ```
+
+The server exits on its own when the BLE link drops. After 20 idle minutes
+it shuts down too, but only if the keyboard is disconnected at that point —
+while the keyboard stays connected, the server stays resident. The next
+command restarts it.
+
+### Jump script (focus jump)
+
+The keyboard can ask the host to focus a window/pane (`--herdr-agent`,
+`--pid`). The host side needs the jump script; install it with:
+
+```bash
+vibekeys install-script        # installs to ~/.vibekeys/scripts/jump
+```
+
+Lookup order: `$VIBEKEYS_JUMP_SCRIPT` → `~/.vibekeys/scripts/jump` (user
+override) → the plugin's bundled copy. If the log says
+`jump script not found (checked: …)`, the checked paths and reasons are
+listed right there — run `install-script` or fix `$VIBEKEYS_JUMP_SCRIPT`.
 
 ### Send text to keyboard display
 

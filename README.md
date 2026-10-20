@@ -6,15 +6,33 @@ A BLE CLI tool for controlling the [VibeKeys MAX](https://github.com/L-jasmine/v
 
 ## Installation
 
+### One-line installer
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/second-state/vibekeys_app/main/install.sh | bash
+```
+
+Installs the binary, offers to install the Claude Code / Codex plugins, and
+sets up `vibekeys update` for in-place upgrades. Supports x64 and arm64 Linux
+(static musl builds) and macOS.
+
 ### Download Pre-built Binary
 
 Download the latest release from [GitHub Releases](https://github.com/second-state/vibekeys_app/releases).
+Linux builds are static musl binaries and run on any distribution.
 
-**Linux:**
+**Linux (x64):**
 ```bash
 wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
 chmod +x vibekeys-linux-x64
 sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**Linux (arm64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-arm64
+chmod +x vibekeys-linux-arm64
+sudo mv vibekeys-linux-arm64 /usr/local/bin/vibekeys
 ```
 
 **macOS (ARM64):**
@@ -30,16 +48,30 @@ Invoke-WebRequest -Uri "https://github.com/second-state/vibekeys_app/releases/la
 # Add to PATH or move to a directory in PATH
 ```
 
+Already installed? Upgrade in place:
+
+```bash
+vibekeys update
+```
+
 ### Build from Source
 
 ```bash
-# Install dependencies (Linux)
+# Install dependencies (Linux, glibc build)
 sudo apt-get install libudev-dev libdbus-1-dev pkg-config
 
 # Build
 cargo build --release
 
 # The binary will be at target/release/vibekeys
+```
+
+To match the released Linux artifacts (static musl binaries):
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+sudo apt-get install musl-tools
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 ### Install Claude Code Plugin
@@ -83,6 +115,11 @@ vibekeys start
 # Stop the server
 vibekeys stop
 ```
+
+The server exits on its own when the BLE link drops. After 20 minutes
+without any command or ASR activity it shuts down as well — but only if the
+keyboard is disconnected at that point; while the keyboard is still
+connected the server stays resident. The next command restarts it.
 
 ### Send text to keyboard display
 

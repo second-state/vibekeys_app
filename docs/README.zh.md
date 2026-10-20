@@ -4,15 +4,31 @@ BLE CLI 工具，用于控制 [VibeKeys MAX](https://github.com/L-jasmine/vibeke
 
 ## 安装
 
+### 一键安装
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/second-state/vibekeys_app/main/install.sh | bash
+```
+
+安装二进制、引导安装 Claude Code / Codex 插件,并设置好 `vibekeys update`
+用于后续原地升级。支持 x64 / arm64 Linux(静态 musl 构建)和 macOS。
+
 ### 下载预编译二进制
 
-从 [GitHub Releases](https://github.com/second-state/vibekeys_app/releases) 下载最新版本。
+从 [GitHub Releases](https://github.com/second-state/vibekeys_app/releases) 下载最新版本。Linux 产物为静态 musl 二进制,任何发行版可直接运行。
 
-**Linux:**
+**Linux (x64):**
 ```bash
 wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-x64
 chmod +x vibekeys-linux-x64
 sudo mv vibekeys-linux-x64 /usr/local/bin/vibekeys
+```
+
+**Linux (arm64):**
+```bash
+wget https://github.com/second-state/vibekeys_app/releases/latest/download/vibekeys-linux-arm64
+chmod +x vibekeys-linux-arm64
+sudo mv vibekeys-linux-arm64 /usr/local/bin/vibekeys
 ```
 
 **macOS (ARM64):**
@@ -28,16 +44,30 @@ Invoke-WebRequest -Uri "https://github.com/second-state/vibekeys_app/releases/la
 # 添加到 PATH 或移动到 PATH 中的目录
 ```
 
+已安装过?原地升级:
+
+```bash
+vibekeys update
+```
+
 ### 从源码构建
 
 ```bash
-# 安装依赖 (Linux)
+# 安装依赖 (Linux,glibc 构建)
 sudo apt-get install libudev-dev libdbus-1-dev pkg-config
 
 # 构建
 cargo build --release
 
 # 编译产物位于 target/release/vibekeys
+```
+
+要与发布的 Linux 产物一致(静态 musl 二进制):
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+sudo apt-get install musl-tools
+cargo build --release --target x86_64-unknown-linux-musl
 ```
 
 ### 安装 Claude Code 插件
@@ -80,6 +110,10 @@ vibekeys start
 # 停止服务器
 vibekeys stop
 ```
+
+BLE 连接断开时 server 会自动退出。20 分钟没有任何命令或 ASR 活动时它也会
+关停——但前提是那一刻键盘已断开;键盘还连着的话,server 会继续驻留。
+下一条命令会把它重新拉起。
 
 ### 发送文字到键盘显示
 
