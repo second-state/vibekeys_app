@@ -222,5 +222,13 @@ pub async fn run(tag: Option<String>) -> Result<(), String> {
         println!("note: {dir_str} is not on your PATH — add it to your shell rc if needed");
     }
 
+    // --- jump 脚本:更新完成后顺手铺到查找路径(失败仅提示,不影响更新)。 ---
+    match crate::install_jump_script() {
+        Ok((path, source)) => {
+            println!("jump script installed: {} ({})", path.display(), source)
+        }
+        Err(e) => println!("note: jump script not installed: {e}"),
+    }
+
     Ok(())
 }

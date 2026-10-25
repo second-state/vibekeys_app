@@ -245,3 +245,10 @@ if [ "$FIRST_INSTALL" = "1" ]; then
   command -v claude >/dev/null 2>&1 && ask_plugin claude "Claude Code" "install"
   command -v codex >/dev/null 2>&1 && ask_plugin codex "Codex" "add"
 fi
+
+# --- jump 脚本:铺到 ~/.vibekeys/scripts/jump(键盘聚焦跳转用,失败不影响安装)---
+if "$INSTALL_DIR/$NAME" install-script; then
+  :
+else
+  echo "note: jump script not installed — run \"$INSTALL_DIR/$NAME\" install-script later"
+fi
